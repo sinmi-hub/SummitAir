@@ -1,0 +1,48 @@
+# Runtime credentials; keep only the blank configuration template
+.env
+.env.*
+!.env.example
+*.env
+.keys/
+secrets/
+credentials/
+*-sa.json
+*service-account*.json
+*credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python environments, caches, builds, and call state
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+build/
+dist/
+*.egg-info/
+*.sqlite*
+*.db
+*.db-*
+*.log
+
+# Private deployment history
+/deploy/STATUS.md
+
+# Local tools, editor settings, recordings, and scratch exports
+.agents/
+.codex/
+.vscode/
+.idea/
+recordings/
+transcripts/
+exports/
+.DS_Store
+=*.txt
+*Zone.Identifier

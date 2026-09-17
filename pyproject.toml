@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "summit-air-sip"
+version = "0.2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=2,<3",
+    "starlette>=0.47,<1",
+    "uvicorn>=0.35,<1",
+    "websockets>=15,<17",
+    "httpx>=0.28,<1",
+    "jsonschema>=4,<5",
+    "google-api-python-client>=2.100,<3",
+    "google-auth>=2.30,<3",
+    "python-dotenv>=1,<2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-asyncio>=1,<2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config.py" = "config.py"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

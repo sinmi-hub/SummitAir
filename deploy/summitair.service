@@ -1,0 +1,24 @@
+[Unit]
+Description=Summit Air SIP control service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=summitair
+Group=summitair
+WorkingDirectory=/opt/summitair
+EnvironmentFile=/etc/summitair.env
+Environment=CALL_STATE_PATH=/var/lib/summitair/calls.sqlite3
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/summitair/.venv/bin/python -m uvicorn app.server:app --host 127.0.0.1 --port 8000 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=35
+StateDirectory=summitair
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

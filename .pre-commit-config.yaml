@@ -1,0 +1,9 @@
+# Optional: industry-standard secret scanning via the pre-commit framework.
+#   pip install pre-commit && pre-commit install
+# The Python-only .githooks/pre-commit hook checks common credential formats;
+# this alternative adds gitleaks for deeper detection. Use one hook manager.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
