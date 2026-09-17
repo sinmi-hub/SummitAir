@@ -1,5 +1,8 @@
 # Summit Air — direct SIP voice agent
 
+Call the live agent at **+1 386-306-3395**. Source code:
+**https://github.com/sinmi-hub/SummitAir**.
+
 Telnyx sends telephone audio directly to OpenAI `gpt-realtime` over TLS/SRTP.
 This Python service verifies incoming OpenAI webhooks, accepts each call with
 `app/agent/SYSTEM-PROMPT.md`, delivers the greeting, and maintains one control
