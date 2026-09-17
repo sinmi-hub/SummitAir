@@ -14,6 +14,16 @@ contains the existing lookup, availability, and booking handlers. Google adapter
 and the system-prompt file are preserved byte-for-byte. The undeployed Telnyx
 Edge wrapper is removed.
 
+## Pause and resume the live demo
+
+Stop: `gcloud compute instances stop summitair-sip --project=settl-voice-agent --zone=us-central1-a`
+
+Start: `gcloud compute instances start summitair-sip --project=settl-voice-agent --zone=us-central1-a`
+
+The phone agent is unavailable while the VM is stopped. The static IP and disk
+remain in place; Caddy and the Python service start automatically when the VM
+starts. Check `https://summitair.34.57.120.135.sslip.io/health` before calling.
+
 ## Local development
 
 Requires Python 3.11 or newer (3.12 used for testing).
