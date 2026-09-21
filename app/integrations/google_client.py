@@ -54,8 +54,9 @@ def service(api: str, version: str):
 def normalize_phone(raw: str) -> str:
     """Best-effort E.164 for US numbers. '15557654321' / '(443) 929-2703' -> '+15557654321'.
 
-    Leaves already-+-prefixed numbers alone (minus stray formatting). Aria's leads
-    are US moving companies, so a bare 10-digit number gets a +1.
+    Leaves already-+-prefixed numbers alone (minus stray formatting). Summit Air's
+    callers are US residential and commercial customers, so a bare 10-digit
+    number gets a +1.
     """
     if not raw:
         return ""
