@@ -43,8 +43,15 @@ VALIDATORS = {t["name"]: Draft202012Validator(t["parameters"]) for t in TOOLS}
 
 def acceptance(settings) -> dict:
     return {"type": "realtime", "model": "gpt-realtime", "instructions": system_prompt(),
-            "audio": {"output": {"voice": settings.openai_voice}}, "tools": TOOLS,
-            "tool_choice": "auto"}
+            "audio": {
+                "output": {"voice": settings.openai_voice},
+                # semantic_vad judges actual speech content rather than raw audio
+                # energy, so phone-line noise and echo are less likely to be read
+                # as the caller interrupting; low eagerness waits longer before
+                # cutting the agent off.
+                "input": {"turn_detection": {"type": "semantic_vad", "eagerness": "low"}},
+            },
+            "tools": TOOLS, "tool_choice": "auto"}
 
 
 class CallManager:
