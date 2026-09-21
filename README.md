@@ -1,95 +1,91 @@
-# Summit Air — direct SIP voice agent
+# Summit Air: AI phone agent
 
-Call the live agent at **+1 386-306-3395**. Source code:
-**https://github.com/sinmi-hub/SummitAir**.
+Summit Air runs 40 technicians across three counties, and its phones ring
+off the hook every time a heat wave or cold snap hits. This agent answers
+those inbound calls, works out what the caller needs, and books a service
+visit, without a person picking up first.
 
-Telnyx sends telephone audio directly to OpenAI `gpt-realtime` over TLS/SRTP.
-This Python service verifies incoming OpenAI webhooks, accepts each call with
-`app/agent/SYSTEM-PROMPT.md`, delivers the greeting, and maintains one control
-WebSocket per call. It never relays, records, transcodes, or generates audio.
+## What it can do
 
-`app/server.py` serves `GET /health` and `POST /webhooks/openai`.
-`app/realtime.py` owns call control and Realtime tool dispatch. `app/tools.py`
-contains the existing lookup, availability, and booking handlers. Google adapters
-and the system-prompt file are preserved byte-for-byte. The undeployed Telnyx
-Edge wrapper is removed.
+The agent asks what's wrong (no heat, no AC, a strange smell, routine
+maintenance) and whether the property is residential or commercial. It
+weighs the caller's circumstances, not just keywords: a gas smell ends the
+call and sends them to 911 immediately. The agent flags "no heat in January
+with an elderly person in the house" as urgent even though the caller never
+said the word "emergency," and books routine maintenance without that
+urgency. The full triage logic lives in
+[`app/agent/SYSTEM-PROMPT.md`](app/agent/SYSTEM-PROMPT.md).
 
-## Pause and resume the live demo
+Once it understands the issue, the agent collects name, callback number,
+address, and availability in a back-and-forth conversation rather than a
+form read aloud. It checks the shop's real calendar for open slots and
+writes the booking back, so nothing it offers is a placeholder time. For
+anything it can't resolve, or a caller who needs a person right away, it
+transfers the call and passes along what it already learned, so the caller
+doesn't repeat themselves.
 
-Stop: `gcloud compute instances stop summitair-sip --project=settl-voice-agent --zone=us-central1-a`
+## Call flow
 
-Start: `gcloud compute instances start summitair-sip --project=settl-voice-agent --zone=us-central1-a`
+```mermaid
+flowchart LR
+  Caller -->|dials in| Telnyx[Telnyx SIP trunk]
+  Telnyx -->|TLS/SRTP| Realtime["OpenAI Realtime API<br/>(gpt-realtime)"]
+  Realtime <-->|tool calls| Backend["app/realtime.py<br/>app/tools.py"]
+  Backend --> Sheets[("Google Sheets<br/>customer record")]
+  Backend --> Calendar[("Google Calendar<br/>technician availability")]
+  Backend -->|needs a person| Human[Transfer to on-call staff]
+```
 
-The phone agent is unavailable while the VM is stopped. The static IP and disk
-remain in place; Caddy and the Python service start automatically when the VM
-starts. Check `https://summitair.34.57.120.135.sslip.io/health` before calling.
+## Why these tools
 
-## Local development
+Telnyx connects straight to OpenAI's Realtime API over TLS/SRTP, with
+nothing relaying or re-encoding audio in between. Fewer hops means less
+latency and one less thing that can break mid-call.
 
-Requires Python 3.11 or newer (3.12 used for testing).
+The shop's customer list already lives in Google Sheets, so the agent
+looks up real leads there instead of a second database nobody would keep
+updated. Technician schedules already live in Google Calendar, and booking
+through that same calendar keeps the agent's slots consistent with what
+dispatch actually sees.
+
+The model runs off a fixed system prompt plus three narrow tools
+(`lookup`, `availability`, `book` in
+[`app/tools.py`](app/tools.py)). The model handles the conversation; the
+tools handle anything that touches a real record, so a booking is never
+something the model invents on its own.
+
+The backend is Python (FastAPI), holding one control WebSocket per active
+call and dispatching each tool call as the model requests it.
+
+Source code: **https://github.com/sinmi-hub/SummitAir**. Deployment and
+cutover notes are in [`deploy/README.md`](deploy/README.md).
+
+## Pausing the live demo
+
+The demo VM can be stopped and started on demand to control cost. While
+stopped, the phone number won't answer. If the number doesn't pick up,
+check `https://summitair.34.57.120.135.sslip.io/health`. It's likely
+paused.
+
+## Running it locally
+
+Requires Python 3.11+.
 
 ```sh
 make install
 cp .env.example .env
-# Supply actual credentials. Never disable signature verification.
+# Supply your own credentials
 make test
 make serve
 ```
 
-Set `OPENAI_API_KEY` and the real `OPENAI_WEBHOOK_SECRET` before starting.
-The latter comes from creating the project webhook in OpenAI, not from the API
-key. `HUMAN_TRANSFER_NUMBER` must be a known E.164 destination. No number is
-inferred from operator contact information or caller metadata.
+## Repository hygiene
 
-The supplied tool schemas validate model arguments. Google operations run in a
-single dedicated worker because the existing adapters share a cached,
-non-thread-safe Google HTTP client. The socket keeps processing call events
-while Google I/O runs. There are no public unauthenticated tool endpoints.
-
-Run **one worker and one instance**, with `CALL_STATE_PATH` on persistent disk.
-A tiny SQLite ledger deduplicates incoming calls across restarts for four days.
-Duplicate tool invocation IDs are ignored within a call; repeated booking
-attempts for the same phone and slot are blocked. The service offers at most
-16 simultaneous control connections. Restarting ends active calls; startup
-ends orphaned calls before serving webhooks. Deploy between calls.
-
-A lost control connection ends the call rather than replaying possibly completed
-bookings. Google operations time out to the caller after 20 seconds, but an
-already-running write may still finish. Never retry an unclear booking result.
-
-## Current demo limitations
-
-- Booking requires an existing sheet row. New-customer intake is not persisted.
-- Callback creation is not implemented and no callback tool is advertised.
-- The existing calendar adapter checks availability but does not reserve slots
-  atomically, account for technician capacity, or roll back a calendar event if
-  the sheet update fails. The legacy sheet status remains `demo_booked`.
-- Transfer sends OpenAI a SIP REFER to the configured number. HTTP success means
-  the request reached the carrier; it does **not** prove that a human answered.
-  Warm transfer, summary delivery, and no-answer recovery are not implemented.
-  Verify carrier behavior before claiming the prompt's full fallback flow works.
-- The new greeting omits the recording claim because direct SIP does not inherit
-  the old assistant's recording configuration. The preserved prompt still assumes
-  recording. Resolve this by configuring and verifying carrier recording and
-  restoring the disclosure before using a recorded demo, or by separately
-  authorizing a prompt correction. No audio recording is added to the backend.
-
-See [deployment and cutover](deploy/README.md).
-
-## Public repository hygiene
-
-Copy `.env.example` for configuration; keep real values in ignored `.env` files.
-Keep service-account JSON keys in `.keys/` outside source control. Never include
-call recordings, transcripts, customer exports, or private deployment snapshots.
-Local deployment status is intentionally ignored.
-
-Enable the staged-file credential check after cloning:
+`.env.example` documents required configuration. Real values stay in an
+ignored `.env` file, and service-account keys stay out of source control.
+This repo includes a pre-commit hook that screens staged files for common
+credential formats:
 
 ```sh
 git config core.hooksPath .githooks
 ```
-
-Before publishing, review `git diff --cached` and `git status --ignored`.
-The hook is a guard against common credential formats, not a guarantee that every
-kind of private data is detected. `.gitignore` does not remove files already in
-Git history; exposed credentials must be revoked and replaced.

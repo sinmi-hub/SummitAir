@@ -34,6 +34,7 @@ dist/
 
 # Private deployment history
 /deploy/STATUS.md
+/temp.md
 
 # Local tools, editor settings, recordings, and scratch exports
 .agents/
