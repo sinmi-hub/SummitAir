@@ -36,6 +36,7 @@ dist/
 /deploy/STATUS.md
 /temp.md
 /BACKLOG.md
+/AGENTS.md
 
 # Local tools, editor settings, recordings, and scratch exports
 .agents/
