@@ -25,14 +25,24 @@ TOOL_SPECS = [
     ("availability", "Get available appointments. Offer only returned slots.",
      {"days_ahead": {"type": "integer", "minimum": 1, "maximum": 14}}, []),
     ("book", "Book an offered slot only after caller agreement. Creates a new customer record "
-     "if the phone number has no existing one. Only booked:true confirms success. Never retry "
-     "an unclear result; transfer for verification.",
+     "if the phone number has no existing one. name becomes the calendar event's title; notes "
+     "(the HVAC issue or reason for the visit) becomes its description -- keep them separate, "
+     "don't combine into one string. Only booked:true confirms success. Never retry an unclear "
+     "result; transfer for verification.",
      {"phone": PHONE, "slot_iso": {"type": "string", "minLength": 10, "maxLength": 64},
       "name": {"type": "string", "maxLength": 200},
-      "summary": {"type": "string", "maxLength": 1000}}, ["phone", "slot_iso"]),
+      "notes": {"type": "string", "maxLength": 1000}},
+     ["phone", "slot_iso", "name", "notes"]),
+    ("reschedule", "Move an already-booked appointment to a different offered slot. Only for a "
+     "caller who already has a confirmed booking and wants a different time; use book for a new "
+     "appointment instead. Only rescheduled:true confirms success.",
+     {"phone": PHONE, "slot_iso": {"type": "string", "minLength": 10, "maxLength": 64}},
+     ["phone", "slot_iso"]),
     ("transfer_to_human", "After explaining the handoff, request transfer to the configured human. "
      "A requested transfer does not prove that anyone answered. No warm-handoff summary is supported.", {}, []),
-    ("end_call", "End the call after speaking the closing or emergency instructions.", {}, []),
+    ("end_call", "End the call after fully speaking the closing or emergency instructions. "
+     "If an interruption cut off a safety instruction before it finished, restate it in full "
+     "first; do not call this while a required instruction is incomplete.", {}, []),
 ]
 TOOLS = [{"type": "function", "name": name, "description": description,
           "parameters": {"type": "object", "properties": props,
@@ -41,15 +51,29 @@ TOOLS = [{"type": "function", "name": name, "description": description,
 VALIDATORS = {t["name"]: Draft202012Validator(t["parameters"]) for t in TOOLS}
 
 
+def audio_input_config(interrupt_response: bool) -> dict:
+    # Shared by acceptance() and the greeting-window session.update restore below,
+    # so the two can never drift apart. session.update's merge granularity below
+    # the top level isn't documented, so every caller sends this whole object
+    # rather than relying on a partial nested patch preserving siblings.
+    return {
+        "noise_reduction": {"type": "far_field"},
+        "turn_detection": {"type": "semantic_vad", "eagerness": "high",
+                           "interrupt_response": interrupt_response},
+        "transcription": {"model": "gpt-live-transcribe"},
+    }
+
+
 def acceptance(settings) -> dict:
-    return {"type": "realtime", "model": "gpt-realtime", "instructions": system_prompt(),
+    return {"type": "realtime", "model": "gpt-realtime-2.1", "instructions": system_prompt(),
+            "reasoning": {"effort": "medium"},
             "audio": {
                 "output": {"voice": settings.openai_voice},
-                # semantic_vad judges actual speech content rather than raw audio
-                # energy, so phone-line noise and echo are less likely to be read
-                # as the caller interrupting; low eagerness waits longer before
-                # cutting the agent off.
-                "input": {"turn_detection": {"type": "semantic_vad", "eagerness": "low"}},
+                # interrupt_response starts false: the greeting must play in full,
+                # confirmed live -- it was getting cut short on effectively every
+                # test call. Restored to true after the greeting's response.done
+                # so normal barge-in works for the rest of the call.
+                "input": audio_input_config(interrupt_response=False),
             },
             "tools": TOOLS, "tool_choice": "auto"}
 
@@ -96,6 +120,8 @@ class CallManager:
 
     async def run(self, call_id):
         started = time.monotonic()
+        ws = None
+        call = None
         try:
             await self.action(call_id, "accept", acceptance(self.settings))
             log.info("call=%s accept_ms=%.0f", call_id, (time.monotonic() - started) * 1000)
@@ -115,23 +141,35 @@ class CallManager:
                     await asyncio.sleep(0.2)
             log.info("call=%s control_ready_ms=%.0f", call_id, (time.monotonic() - started) * 1000)
             try:
-                await Call(self, call_id, ws).run()
+                call = Call(self, call_id, ws)
+                await call.run()
             finally:
                 await ws.close()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            detail = ""
-            frame = getattr(exc, "rcvd", None) or getattr(exc, "sent", None)
-            if frame is not None:
-                detail = " close_code=%s close_reason=%r" % (frame.code, frame.reason)
+            age = "%.0fs" % (time.monotonic() - call.last_event_at) if call and call.last_event_at else None
             response = getattr(exc, "response", None)
-            if response is not None:
-                body = getattr(response, "body", b"")
-                detail = " http_status=%s http_headers=%r http_body=%r" % (
-                    getattr(response, "status_code", "?"), dict(getattr(response, "headers", {})),
-                    body[:500] if body else body)
-            log.error("call=%s control_failed=%s%s", call_id, type(exc).__name__, detail)
+            # A close triggered by our own end_call/transfer handling (call.ending
+            # already True) races Call.run()'s read loop against that same close
+            # and surfaces as this same exception. Expected, not a failure.
+            level = log.info if call and call.ending else log.error
+            level(
+                "call=%s control_closed=%s expected=%s message=%r "
+                "rcvd=%r sent=%r rcvd_then_sent=%r "
+                "ws_close_code=%r ws_close_reason=%r "
+                "http_status=%r http_body=%r "
+                "last_event=%r last_event_age=%r saw_realtime_error=%r",
+                call_id, type(exc).__name__, bool(call and call.ending), str(exc),
+                getattr(exc, "rcvd", None), getattr(exc, "sent", None),
+                getattr(exc, "rcvd_then_sent", None),
+                getattr(ws, "close_code", None) if ws else None,
+                getattr(ws, "close_reason", None) if ws else None,
+                getattr(response, "status_code", None),
+                getattr(response, "body", b"")[:500] if response else None,
+                call.last_event if call else None, age,
+                call.saw_error_event if call else None,
+            )
         finally:
             # Includes ambiguous acceptance failures, shutdown, and lost control.
             # No automatic acceptance/tool retries after an uncertain mutation.
@@ -178,8 +216,14 @@ class Call:
         self.playback_idle = asyncio.Event()
         self.playback_idle.set()
         self.speech_stopped_at = None
+        self.speech_started_audio_ms = None
+        self.agent_audio_stopped_at = None
         self.ending = False
         self.transfer_attempted = False
+        self.greeting_protected = True
+        self.last_event = None
+        self.last_event_at = None
+        self.saw_error_event = False
 
     async def send(self, message):
         await self.ws.send(json.dumps(message))
@@ -210,6 +254,9 @@ class Call:
 
     async def event(self, event):
         kind = event.get("type")
+        self.last_event, self.last_event_at = kind, time.monotonic()
+        if kind == "error":
+            self.saw_error_event = True
         if kind == "response.created":
             self.response_active = True
             self.playback_idle.clear()
@@ -217,6 +264,18 @@ class Call:
             self.response_active = False
             if not self.speaking:
                 self.playback_idle.set()
+            if self.greeting_protected:
+                # The greeting (the very first response) just finished playing in
+                # full, uninterrupted. Restore normal barge-in for the rest of the
+                # call. Any real caller turn that landed during the greeting still
+                # gets answered -- create_response stays on, the server's attempt
+                # to auto-respond to it while our greeting response was active
+                # returns conversation_already_has_active_response, which
+                # continue_response()'s needs_response retry already handles.
+                self.greeting_protected = False
+                await self.send({"type": "session.update",
+                                  "session": {"type": "realtime",
+                                              "audio": {"input": audio_input_config(True)}}})
             await self.continue_response()
         elif kind == "output_audio_buffer.started":
             self.speaking = True
@@ -226,11 +285,38 @@ class Call:
                          (time.monotonic() - self.speech_stopped_at) * 1000)
                 self.speech_stopped_at = None
         elif kind in {"output_audio_buffer.stopped", "output_audio_buffer.cleared"}:
+            if kind == "output_audio_buffer.cleared" and self.speaking:
+                log.info("call=%s agent_speech_interrupted=true", self.call_id)
             self.speaking = False
+            self.agent_audio_stopped_at = time.monotonic()
             if not self.response_active:
                 self.playback_idle.set()
+        elif kind == "input_audio_buffer.speech_started":
+            # No amplitude gate exists on semantic_vad (unlike server_vad's
+            # threshold), so this can fire on a low-level artifact rather than
+            # real speech. Logged only; nothing acts on it. during_agent_speech
+            # separates leaked playback from a false trigger on true silence;
+            # those need different fixes.
+            self.speech_started_audio_ms = event.get("audio_start_ms")
+            since_agent_stopped = (
+                None if self.agent_audio_stopped_at is None
+                else "%.0f" % ((time.monotonic() - self.agent_audio_stopped_at) * 1000)
+            )
+            log.info("call=%s speech_started item=%s during_agent_speech=%s since_agent_stopped_ms=%s",
+                      self.call_id, event.get("item_id"), self.speaking, since_agent_stopped)
         elif kind == "input_audio_buffer.speech_stopped":
             self.speech_stopped_at = time.monotonic()
+            audio_end_ms = event.get("audio_end_ms")
+            duration_ms = (
+                None if self.speech_started_audio_ms is None or audio_end_ms is None
+                else audio_end_ms - self.speech_started_audio_ms
+            )
+            log.info("call=%s speech_stopped item=%s detected_duration_ms=%s",
+                      self.call_id, event.get("item_id"), duration_ms)
+        elif kind == "conversation.item.input_audio_transcription.completed":
+            log.info("call=%s caller_said=%r", self.call_id, event.get("transcript", ""))
+        elif kind == "response.output_audio_transcript.done":
+            log.info("call=%s agent_said=%r", self.call_id, event.get("transcript", ""))
         elif kind == "response.function_call_arguments.done":
             invocation = event.get("call_id")
             if not isinstance(invocation, str) or invocation in self.seen:
@@ -247,7 +333,8 @@ class Call:
                 self.needs_response = True
             else:
                 raise RuntimeError("Realtime session error")
-        # Never decode, store, log, forward, or send audio payloads.
+        # Transcript text (from OpenAI's own transcription, not decoded here) is
+        # logged for live debugging; raw audio payloads are still never touched.
 
     def tool_finished(self, task):
         self.pending.discard(task)
@@ -296,6 +383,10 @@ class Call:
             # response.done is generation completion, not audible playback completion.
             await asyncio.wait_for(self.playback_idle.wait(), timeout=30)
             if name == "end_call":
+                # Logged before hangup/close: closing the socket here races
+                # Call.run()'s read loop, which can cancel this task's own
+                # finally-block "tool=end_call" log before it runs.
+                log.info("call=%s invoking=end_call", self.call_id)
                 await self.manager.action(self.call_id, "hangup")
                 self.ending = True
                 await self.ws.close()
@@ -309,12 +400,14 @@ class Call:
             await self.manager.action(self.call_id, "refer", {"target_uri": "tel:" + number})
             return {"transfer_requested": True, "answer_status": "unknown",
                     "note": "The carrier owns transfer completion. Do not say a human answered."}
-        if name == "book":
+        if name in {"book", "reschedule"}:
             if args["slot_iso"] not in self.offered_slots:
-                return {"booked": False, "error": "Check availability and offer a returned slot first."}
+                key = "booked" if name == "book" else "rescheduled"
+                return {key: False, "error": "Check availability and offer a returned slot first."}
             booking = (args["phone"], args["slot_iso"])
             if booking in self.bookings:
-                return {"booked": False, "error": "Already attempted this booking; transfer to verify, do not retry."}
+                key = "booked" if name == "book" else "rescheduled"
+                return {key: False, "error": "Already attempted this booking; transfer to verify, do not retry."}
             self.bookings.add(booking)
         future = asyncio.get_running_loop().run_in_executor(self.manager.worker, HANDLERS[name], args)
         # A timed-out Google mutation may still finish in its worker. Never auto-retry.
