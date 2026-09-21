@@ -112,7 +112,11 @@ class CallManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.error("call=%s control_failed=%s", call_id, type(exc).__name__)
+            detail = ""
+            frame = getattr(exc, "rcvd", None) or getattr(exc, "sent", None)
+            if frame is not None:
+                detail = " close_code=%s close_reason=%r" % (frame.code, frame.reason)
+            log.error("call=%s control_failed=%s%s", call_id, type(exc).__name__, detail)
         finally:
             # Includes ambiguous acceptance failures, shutdown, and lost control.
             # No automatic acceptance/tool retries after an uncertain mutation.
