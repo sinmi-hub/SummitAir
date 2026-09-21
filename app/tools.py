@@ -26,20 +26,13 @@ def _t_availability(args: dict) -> dict:
 
 
 def _t_book(args: dict) -> dict:
-    # TODO: crm.py has no "create a new row" method — it assumes the caller
-    # already exists in the sheet (true for the old sales-lead use case, not
-    # true for a fresh HVAC caller). Wire this up once the sheet's real field
-    # layout is decided; for now this only works for a phone number that
-    # already has a row.
     from app.integrations.crm import SheetsLeadStore
     from app.integrations.gcal import GoogleCalendar
 
     phone = args.get("phone", "")
     slot_iso = args.get("slot_iso", "")
     store = SheetsLeadStore()
-    lead = store.get_lead_by_phone(phone)
-    if not lead:
-        return {"booked": False, "error": "no existing record for this phone number"}
+    lead = store.get_lead_by_phone(phone) or store.create_lead(phone, args.get("name", ""))
     event_id = GoogleCalendar().book_meeting(
         slot_iso, args.get("summary", f"Service call — {lead.name or phone}"),
         send_updates="none",

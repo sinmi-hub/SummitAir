@@ -201,16 +201,25 @@ async def test_book_requires_offered_slot_and_never_retries_uncertainty(call):
         assert not (await call.execute('book', args))['booked']
     handler.assert_called_once()
 
-def test_existing_booking_handler_preserved():
+def test_booking_handler_creates_a_lead_for_an_unknown_phone():
     with patch('app.integrations.crm.SheetsLeadStore') as store, patch('app.integrations.gcal.GoogleCalendar') as calendar:
         store.return_value.get_lead_by_phone.return_value = None
-        assert not _t_book({'phone': '+15551234567'})['booked']
-        calendar.assert_not_called()
+        new_lead = SimpleNamespace(name='')
+        store.return_value.create_lead.return_value = new_lead
+        calendar.return_value.book_meeting.return_value = 'evt_new'
+        result = _t_book({'phone': '+15551234567', 'slot_iso': '2026-09-18T10:00:00-05:00'})
+        assert result['booked']
+        store.return_value.create_lead.assert_called_once_with('+15551234567', '')
+        store.return_value.set_meeting_ref.assert_called_once_with(new_lead, result['slot_iso'], 'evt_new')
+
+def test_existing_booking_handler_preserved():
+    with patch('app.integrations.crm.SheetsLeadStore') as store, patch('app.integrations.gcal.GoogleCalendar') as calendar:
         lead = SimpleNamespace(name='Test')
         store.return_value.get_lead_by_phone.return_value = lead
         calendar.return_value.book_meeting.return_value = 'evt_test'
         result = _t_book({'phone': '+15551234567', 'slot_iso': '2026-09-18T10:00:00-05:00'})
         assert result['booked']
+        store.return_value.create_lead.assert_not_called()
         store.return_value.set_meeting_ref.assert_called_once_with(lead, result['slot_iso'], 'evt_test')
         assert calendar.return_value.book_meeting.call_args.kwargs['send_updates'] == 'none'
 

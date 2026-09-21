@@ -24,9 +24,11 @@ TOOL_SPECS = [
      {"phone": PHONE}, ["phone"]),
     ("availability", "Get available appointments. Offer only returned slots.",
      {"days_ahead": {"type": "integer", "minimum": 1, "maximum": 14}}, []),
-    ("book", "Book an offered slot only after caller agreement. Requires an existing sheet row. "
-     "Only booked:true confirms success. Never retry an unclear result; transfer for verification.",
+    ("book", "Book an offered slot only after caller agreement. Creates a new customer record "
+     "if the phone number has no existing one. Only booked:true confirms success. Never retry "
+     "an unclear result; transfer for verification.",
      {"phone": PHONE, "slot_iso": {"type": "string", "minLength": 10, "maxLength": 64},
+      "name": {"type": "string", "maxLength": 200},
       "summary": {"type": "string", "maxLength": 1000}}, ["phone", "slot_iso"]),
     ("transfer_to_human", "After explaining the handoff, request transfer to the configured human. "
      "A requested transfer does not prove that anyone answered. No warm-handoff summary is supported.", {}, []),
