@@ -2,8 +2,8 @@
 
 `CalendarStore` is the swappable interface; `GoogleCalendar` is the concrete
 implementation. All times are handled in the calendar's local timezone (config
-``SERVICE_TIMEZONE``) since that is how Aria talks about slots out loud
-("Tuesday at 2").
+``SERVICE_TIMEZONE``), and every spoken slot names that zone explicitly, since
+a caller can be anywhere.
 """
 from __future__ import annotations
 
@@ -17,6 +17,10 @@ from config import settings
 from app.integrations.google_client import service
 from app.log import debug
 
+# TTS-friendly zone names ("Eastern", not the letters "E-D-T").
+_ZONE_NAMES = {"EST": "Eastern", "EDT": "Eastern", "CST": "Central", "CDT": "Central",
+               "MST": "Mountain", "MDT": "Mountain", "PST": "Pacific", "PDT": "Pacific"}
+
 
 @dataclass
 class Slot:
@@ -24,8 +28,11 @@ class Slot:
     end: datetime
 
     def label(self) -> str:
-        # Spoken-friendly: "Tuesday, June 3 at 2:00 PM"
-        return self.start.strftime("%A, %B %-d at %-I:%M %p")
+        # Spoken-friendly, timezone named so a caller in a different zone
+        # doesn't mistake the offered time for one that's already passed:
+        # "Tuesday, June 3 at 2:00 PM Eastern"
+        return self.start.strftime("%A, %B %-d at %-I:%M %p ") + _ZONE_NAMES.get(
+            self.start.tzname(), self.start.tzname())
 
     def iso(self) -> str:
         return self.start.isoformat()
