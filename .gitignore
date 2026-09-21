@@ -35,6 +35,7 @@ dist/
 # Private deployment history
 /deploy/STATUS.md
 /temp.md
+/BACKLOG.md
 
 # Local tools, editor settings, recordings, and scratch exports
 .agents/
