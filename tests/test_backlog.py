@@ -17,14 +17,12 @@ from test_sip import Socket, config
 
 
 # --- "Add new-customer row creation so first-time callers can book." -------
+# Fixed: an unknown phone number now gets a new sheet row instead of a refusal.
 
-async def test_unknown_caller_cannot_book_through_the_full_call_path(tmp_path):
-    """Booking requires an existing sheet row today; a first-time caller with
-    no row is turned away even after offering them a real slot. This is the
-    current, intentional limitation, not a bug — it documents the gap the
-    backlog item names, exercised through Call.execute rather than by
-    calling _t_book directly, so it also proves offered-slot tracking and
-    the real handler agree on the failure.
+async def test_unknown_caller_gets_a_new_row_through_the_full_call_path(tmp_path):
+    """A first-time caller with no existing sheet row now books successfully:
+    a new row is created for them first. Exercised through Call.execute, not
+    _t_book directly, so it also proves offered-slot tracking agrees.
     """
     manager = SimpleNamespace(settings=config(tmp_path, human_transfer_number="+15551234567"),
                               action=AsyncMock(), worker=None)
@@ -33,11 +31,17 @@ async def test_unknown_caller_cannot_book_through_the_full_call_path(tmp_path):
     call = Call(manager, "rtc_test", Socket())
     slot = "2026-09-18T10:00:00-05:00"
     call.offered_slots.add(slot)
-    with patch("app.integrations.crm.SheetsLeadStore") as store:
+    with patch("app.integrations.crm.SheetsLeadStore") as store, \
+         patch("app.integrations.gcal.GoogleCalendar") as calendar:
         store.return_value.get_lead_by_phone.return_value = None
-        result = await call.execute("book", {"phone": "+15559990000", "slot_iso": slot})
-    assert not result["booked"]
-    assert result["error"] == "no existing record for this phone number"
+        new_lead = SimpleNamespace(name="Jordan Lee", phone="+15559990000", row=7)
+        store.return_value.create_lead.return_value = new_lead
+        calendar.return_value.book_meeting.return_value = "evt_new"
+        result = await call.execute(
+            "book", {"phone": "+15559990000", "slot_iso": slot, "name": "Jordan Lee"})
+    assert result["booked"]
+    store.return_value.create_lead.assert_called_once_with("+15559990000", "Jordan Lee")
+    store.return_value.set_meeting_ref.assert_called_once_with(new_lead, slot, "evt_new")
     manager.worker.shutdown(wait=True, cancel_futures=True)
 
 

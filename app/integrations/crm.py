@@ -50,13 +50,16 @@ class Lead:
 
 
 class LeadStore(ABC):
-    """The swappable CRM interface Aria's tools call."""
+    """The swappable CRM interface the booking tools call."""
 
     @abstractmethod
     def get_lead_by_phone(self, phone: str) -> Lead | None: ...
 
     @abstractmethod
     def get_lead_by_name(self, name: str) -> Lead | None: ...
+
+    @abstractmethod
+    def create_lead(self, phone: str, name: str = "") -> Lead: ...
 
     @abstractmethod
     def log_call(self, lead: Lead, summary: str, status: str | None = None,
@@ -137,6 +140,21 @@ class SheetsLeadStore(LeadStore):
 
     def list_leads(self) -> list[Lead]:
         return self._all_rows()
+
+    def create_lead(self, phone: str, name: str = "") -> Lead:
+        normalized = normalize_phone(phone)
+        values = [""] * len(COLUMNS)
+        values[COLUMNS.index("name")] = name
+        values[COLUMNS.index("phone")] = normalized
+        values[COLUMNS.index("status")] = "new"
+        result = self._values.append(
+            spreadsheetId=self.sheet_id, range=f"{self.tab}!A:A",
+            valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS",
+            body={"values": [values]},
+        ).execute()
+        row = int(result["updates"]["updatedRange"].rsplit("!", 1)[-1].split(":")[0][1:])
+        debug(f"[crm] row {row} created for {normalized}")
+        return Lead(name=name, phone=normalized, status="new", row=row)
 
     # --- writes -------------------------------------------------------------
     def _set_cells(self, row: int, updates: dict[str, str]) -> None:

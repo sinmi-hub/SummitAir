@@ -35,7 +35,7 @@ class Settings:
     tickets_sheet_tab: str = field(default_factory=lambda: _get("TICKETS_SHEET_TAB", "Tickets"))
     service_calendar_id: str = field(default_factory=lambda: _get("SERVICE_CALENDAR_ID"))
     service_timezone: str = field(
-        default_factory=lambda: _get("SERVICE_TIMEZONE", "America/Chicago"))
+        default_factory=lambda: _get("SERVICE_TIMEZONE", "America/New_York"))
 
 
 settings = Settings()
