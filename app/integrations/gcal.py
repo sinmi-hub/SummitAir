@@ -52,7 +52,7 @@ class GoogleCalendar(CalendarStore):
         self.calendar_id = calendar_id or settings.service_calendar_id
         self.tz = ZoneInfo(tz or settings.service_timezone)
         if not self.calendar_id:
-            raise RuntimeError("DEMO_CALENDAR_ID is not set.")
+            raise RuntimeError("SERVICE_CALENDAR_ID is not set.")
 
     @property
     def _events(self):
