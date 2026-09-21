@@ -106,13 +106,13 @@ class CallManager:
                 try:
                     ws = await self.socket_factory(
                         url, additional_headers={"Authorization": f"Bearer {self.settings.openai_api_key}"},
-                        open_timeout=10, max_size=1024 * 1024,
+                        open_timeout=3, max_size=1024 * 1024,
                     )
                     break
                 except Exception:
                     if attempt == 2:
                         raise
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                    await asyncio.sleep(0.2)
             log.info("call=%s control_ready_ms=%.0f", call_id, (time.monotonic() - started) * 1000)
             try:
                 await Call(self, call_id, ws).run()
@@ -125,6 +125,12 @@ class CallManager:
             frame = getattr(exc, "rcvd", None) or getattr(exc, "sent", None)
             if frame is not None:
                 detail = " close_code=%s close_reason=%r" % (frame.code, frame.reason)
+            response = getattr(exc, "response", None)
+            if response is not None:
+                body = getattr(response, "body", b"")
+                detail = " http_status=%s http_headers=%r http_body=%r" % (
+                    getattr(response, "status_code", "?"), dict(getattr(response, "headers", {})),
+                    body[:500] if body else body)
             log.error("call=%s control_failed=%s%s", call_id, type(exc).__name__, detail)
         finally:
             # Includes ambiguous acceptance failures, shutdown, and lost control.
