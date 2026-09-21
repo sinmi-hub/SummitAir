@@ -70,5 +70,6 @@ prior AI Assistant, TeXML app, and Call Control app have been removed.
 
 ## Logs
 Logs report webhook-to-accept time, webhook-to-control-ready time, tool
-elapsed time, and `speech_stop_to_output_start_ms`. That last metric is
-backend event timing, not caller-perceived latency. 
+elapsed time, and `speech_stop_to_output_start_ms`. 
+
+The last metric above is backend event timing, not caller-perceived latency. 
