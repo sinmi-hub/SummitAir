@@ -37,11 +37,5 @@ class Settings:
     service_timezone: str = field(
         default_factory=lambda: _get("SERVICE_TIMEZONE", "America/Chicago"))
 
-    # Who's named as the attendee on booked service calls, and in invite descriptions.
-    operator_name: str = field(
-        default_factory=lambda: _get("OPERATOR_NAME", "the Summit Air dispatch team"))
-    operator_email: str = field(
-        default_factory=lambda: _get("OPERATOR_EMAIL", "dispatch@example.com"))
-
 
 settings = Settings()
