@@ -7,22 +7,12 @@ visit, without a person picking up first.
 
 ## What it can do
 
-The agent asks what's wrong (no heat, no AC, a strange smell, routine
-maintenance) and whether the property is residential or commercial. It
-weighs the caller's circumstances, not just keywords: a gas smell ends the
-call and sends them to 911 immediately. The agent flags "no heat in January
-with an elderly person in the house" as urgent even though the caller never
-said the word "emergency," and books routine maintenance without that
-urgency. The full triage logic lives in
+The agent is responsible for problem discovery (no heat, no AC, a strange smell, routine
+maintenance) and understanding property type i.e residential or commercial to best assist customers. It
+weighs the caller's circumstances, and gauges based on urgency (routine maintenance or priority). The full triage logic lives in
 [`app/agent/SYSTEM-PROMPT.md`](app/agent/SYSTEM-PROMPT.md).
 
-Once it understands the issue, the agent collects name, callback number,
-address, and availability in a back-and-forth conversation rather than a
-form read aloud. It checks the shop's real calendar for open slots and
-writes the booking back, so nothing it offers is a placeholder time. For
-anything it can't resolve, or a caller who needs a person right away, it
-transfers the call and passes along what it already learned, so the caller
-doesn't repeat themselves.
+After problem discovery, the agent collects relevant details to best understand how to assist customer.  Based on availability, it schedules the right time to solve the problem For anything it can't resolve, or a caller who needs a person right away, human escalation is added with necessary information
 
 ## Call flow
 
@@ -38,24 +28,19 @@ flowchart LR
 
 ## Why these tools
 
-Telnyx connects straight to OpenAI's Realtime API over TLS/SRTP, with
+- Telnyx connects straight to OpenAI's Realtime API over TLS/SRTP, with
 nothing relaying or re-encoding audio in between. Fewer hops means less
 latency and one less thing that can break mid-call.
 
-The shop's customer list already lives in Google Sheets, so the agent
-looks up real leads there instead of a second database nobody would keep
-updated. Technician schedules already live in Google Calendar, and booking
-through that same calendar keeps the agent's slots consistent with what
-dispatch actually sees.
+- Google Sheets acts as a System of Record or a CRM for the agent to utilize and keep track of relevant details.
+
+- Google Calendar is also used to ensure technician and agent can be aligned on schedule and necessary timeslots approved for work and solving the HVAC issues that customers call for
 
 The model runs off a fixed system prompt plus three narrow tools
 (`lookup`, `availability`, `book` in
-[`app/tools.py`](app/tools.py)). The model handles the conversation; the
-tools handle anything that touches a real record, so a booking is never
-something the model invents on its own.
+[`app/tools.py`](app/tools.py)). The model handles conversations, while the tools handle anything that touches a real record. This ensure that the model is not hallucinating, enough to schedule a time on calendar without need for tool use
 
-The backend is Python (FastAPI), holding one control WebSocket per active
-call and dispatching each tool call as the model requests it.
+The backend is Python (FastAPI), holding one control WebSocket per active call and dispatching each tool call as the model requests it.
 
 Source code: **https://github.com/sinmi-hub/SummitAir**. Deployment and
 cutover notes are in [`deploy/README.md`](deploy/README.md).
