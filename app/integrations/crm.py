@@ -99,7 +99,7 @@ class SheetsLeadStore(LeadStore):
         self.sheet_id = sheet_id or settings.tickets_sheet_id
         self.tab = tab or settings.tickets_sheet_tab
         if not self.sheet_id:
-            raise RuntimeError("LEADS_SHEET_ID is not set.")
+            raise RuntimeError("TICKETS_SHEET_ID is not set.")
 
     @property
     def _values(self):
