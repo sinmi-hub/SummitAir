@@ -35,7 +35,7 @@ def test_prompt_is_exact_file(tmp_path):
     assert system_prompt() == expected
     payload = acceptance(config(tmp_path))
     assert payload['instructions'] == expected
-    assert payload['model'] == 'gpt-realtime'
+    assert payload['model'] == 'gpt-realtime-2.1'
     assert payload['tools'] == TOOLS
     assert not any('callback' == t['name'] for t in TOOLS)
 
@@ -106,8 +106,9 @@ async def test_accept_attach_greet_and_cleanup(tmp_path):
     assert requests[0].url.path.endswith('/rtc_test/accept')
     assert json.loads(requests[0].content)['instructions'] == system_prompt()
     assert factory.call_args.args[0] == 'wss://api.openai.com/v1/realtime?call_id=rtc_test'
-    assert socket.messages[0]['type'] == 'response.create'
-    assert 'Summit Air' in socket.messages[0]['response']['instructions']
+    assert socket.messages[0]['type'] == 'input_audio_buffer.clear'
+    assert socket.messages[1]['type'] == 'response.create'
+    assert 'Summit Air' in socket.messages[1]['response']['instructions']
     assert requests[-1].url.path.endswith('/rtc_test/hangup')
     assert socket.closed
     await manager.close()
