@@ -106,9 +106,8 @@ async def test_accept_attach_greet_and_cleanup(tmp_path):
     assert requests[0].url.path.endswith('/rtc_test/accept')
     assert json.loads(requests[0].content)['instructions'] == system_prompt()
     assert factory.call_args.args[0] == 'wss://api.openai.com/v1/realtime?call_id=rtc_test'
-    assert socket.messages[0]['type'] == 'input_audio_buffer.clear'
-    assert socket.messages[1]['type'] == 'response.create'
-    assert 'Summit Air' in socket.messages[1]['response']['instructions']
+    assert socket.messages[0]['type'] == 'response.create'
+    assert 'Summit Air' in socket.messages[0]['response']['instructions']
     assert requests[-1].url.path.endswith('/rtc_test/hangup')
     assert socket.closed
     await manager.close()
@@ -126,6 +125,7 @@ def call(tmp_path):
     manager = SimpleNamespace(settings=config(tmp_path, human_transfer_number='+15551234567'),
                               action=AsyncMock(), worker=ThreadPoolExecutor(max_workers=1))
     c = Call(manager, 'rtc_test', Socket())
+    c.greeting_protected = False  # most tests aren't exercising greeting-window behavior
     yield c
     manager.worker.shutdown(wait=True, cancel_futures=True)
 
@@ -164,6 +164,23 @@ async def test_tool_output_waits_for_active_response(call):
     assert len(call.ws.messages) == 1
     await call.event({'type': 'response.done'})
     assert call.ws.messages[-1]['type'] == 'response.create'
+
+async def test_acceptance_starts_with_interrupt_response_disabled(tmp_path):
+    payload = acceptance(config(tmp_path))
+    assert payload['audio']['input']['turn_detection']['interrupt_response'] is False
+
+async def test_greeting_protection_restores_interrupt_response_once(call):
+    assert call.greeting_protected is False  # fixture default
+    call.greeting_protected = True  # simulate the still-mid-greeting state
+    await call.event({'type': 'response.done'})
+    assert call.ws.messages == [{'type': 'session.update', 'session': {'type': 'realtime', 'audio': {'input': {
+        'noise_reduction': {'type': 'far_field'},
+        'turn_detection': {'type': 'semantic_vad', 'eagerness': 'high', 'interrupt_response': True},
+        'transcription': {'model': 'gpt-live-transcribe'},
+    }}}}]
+    assert call.greeting_protected is False
+    await call.event({'type': 'response.done'})  # a later response finishing should not re-send it
+    assert len(call.ws.messages) == 1
 
 async def test_transfer_waits_for_playback_and_does_not_claim_answer(call):
     await call.event({'type': 'response.created'})

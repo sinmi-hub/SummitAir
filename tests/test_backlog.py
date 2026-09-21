@@ -57,15 +57,18 @@ def test_booking_never_logs_caller_intake_to_sheet_notes():
         calendar.return_value.book_meeting.return_value = "evt_test"
         result = _t_book({
             "phone": "+15551234567", "slot_iso": "2026-09-18T10:00:00-05:00",
-            "summary": "No heat, elderly resident, urgent",
+            "notes": "No heat, elderly resident, urgent",
         })
         assert result["booked"]
-        # The issue/urgency the caller described only reaches the calendar
-        # event's title. Nothing calls log_call, so the sheet's own notes
-        # column, the one place meant for exactly this, stays untouched.
+        # Fixed: the issue/urgency now reaches the calendar event's description,
+        # not its title (name/the matched lead's name builds the title instead --
+        # see test_tools.py). Still-open gap: nothing calls log_call, so the
+        # sheet's own notes column, the one place meant for exactly this, stays
+        # untouched.
         store.return_value.log_call.assert_not_called()
-        assert calendar.return_value.book_meeting.call_args.args[1] == \
+        assert calendar.return_value.book_meeting.call_args.kwargs["description"] == \
             "No heat, elderly resident, urgent"
+        assert calendar.return_value.book_meeting.call_args.args[1] == "Test — HVAC Service Call"
 
 
 # --- "Investigate the unexplained ConnectionClosedError ... before relying
