@@ -14,7 +14,7 @@ import httpx
 from jsonschema import Draft202012Validator, ValidationError
 from websockets.asyncio.client import connect
 
-from app.agent.persona import AGENT_GREETING, system_prompt
+from app.agent.persona import AGENT_GREETING, CLOSING_GOODBYE, system_prompt
 from app.tools import HANDLERS
 
 log = logging.getLogger("summitair")
@@ -221,6 +221,8 @@ class Call:
         self.ending = False
         self.transfer_attempted = False
         self.greeting_protected = True
+        self.last_agent_text = ""
+        self.emergency_declared = False
         self.last_event = None
         self.last_event_at = None
         self.saw_error_event = False
@@ -316,7 +318,12 @@ class Call:
         elif kind == "conversation.item.input_audio_transcription.completed":
             log.info("call=%s caller_said=%r", self.call_id, event.get("transcript", ""))
         elif kind == "response.output_audio_transcript.done":
-            log.info("call=%s agent_said=%r", self.call_id, event.get("transcript", ""))
+            self.last_agent_text = event.get("transcript") or ""
+            # Grounds the end_call goodbye gate below in what the emergency
+            # instruction actually requires the model to say, not a guess.
+            if "911" in self.last_agent_text:
+                self.emergency_declared = True
+            log.info("call=%s agent_said=%r", self.call_id, self.last_agent_text)
         elif kind == "response.function_call_arguments.done":
             invocation = event.get("call_id")
             if not isinstance(invocation, str) or invocation in self.seen:
@@ -378,11 +385,31 @@ class Call:
         except Exception:
             await self.ws.close()
 
+    def _closing_said(self) -> bool:
+        text = self.last_agent_text.lower()
+        return any(phrase in text for phrase in
+                    ("thank you for choosing", "have a great day",
+                     "have an amazing day", "have a wonderful day"))
+
     async def execute(self, name, args):
         if name in {"transfer_to_human", "end_call"}:
             # response.done is generation completion, not audible playback completion.
             await asyncio.wait_for(self.playback_idle.wait(), timeout=30)
             if name == "end_call":
+                # Confirmed live, three separate calls: the model reliably invokes
+                # end_call after a generic "let me wrap this up" line instead of the
+                # specific closing text CALL CLOSING requires. Rather than trust the
+                # prompt again, say it ourselves before the hangup actually happens
+                # -- skipped for an emergency close, where a goodbye is wrong.
+                if not self.emergency_declared and not self._closing_said():
+                    log.info("call=%s end_call_missing_goodbye=true", self.call_id)
+                    await self.send({"type": "response.create", "response": {
+                        "instructions": "Say exactly this and nothing else: " + CLOSING_GOODBYE,
+                        "tool_choice": "none",
+                    }})
+                    self.response_active = True
+                    self.playback_idle.clear()
+                    await asyncio.wait_for(self.playback_idle.wait(), timeout=30)
                 # Logged before hangup/close: closing the socket here races
                 # Call.run()'s read loop, which can cancel this task's own
                 # finally-block "tool=end_call" log before it runs.
