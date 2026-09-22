@@ -64,8 +64,12 @@ def audio_input_config(interrupt_response: bool) -> dict:
     }
 
 
-def acceptance(settings) -> dict:
-    return {"type": "realtime", "model": "gpt-realtime-2.1", "instructions": system_prompt(),
+def acceptance(settings, instructions=None, tools=None) -> dict:
+    # instructions/tools default to SummitAir's own -- callers building a
+    # different domain (see outbound/) pass their own explicitly; SummitAir's
+    # existing call sites and tests, which never pass these, are unaffected.
+    return {"type": "realtime", "model": "gpt-realtime-2.1",
+            "instructions": instructions if instructions is not None else system_prompt(),
             "reasoning": {"effort": "medium"},
             "audio": {
                 "output": {"voice": settings.openai_voice},
@@ -75,12 +79,22 @@ def acceptance(settings) -> dict:
                 # so normal barge-in works for the rest of the call.
                 "input": audio_input_config(interrupt_response=False),
             },
-            "tools": TOOLS, "tool_choice": "auto"}
+            "tools": tools if tools is not None else TOOLS, "tool_choice": "auto"}
 
 
 class CallManager:
-    def __init__(self, settings, http=None, socket_factory=connect):
+    def __init__(self, settings, http=None, socket_factory=connect, *,
+                 instructions=None, tools=None, handlers=None, validators=None, greeting=None,
+                 closing_goodbye=None, closing_phrases=None):
         self.settings = settings
+        # Same defaulting rationale as acceptance() above.
+        self.instructions = instructions if instructions is not None else system_prompt()
+        self.tools = tools if tools is not None else TOOLS
+        self.handlers = handlers if handlers is not None else HANDLERS
+        self.validators = validators if validators is not None else VALIDATORS
+        self.greeting = greeting if greeting is not None else AGENT_GREETING
+        self.closing_goodbye = closing_goodbye if closing_goodbye is not None else CLOSING_GOODBYE
+        self.closing_phrases = closing_phrases if closing_phrases is not None else DEFAULT_CLOSING_PHRASES
         self.http = http or httpx.AsyncClient(
             base_url="https://api.openai.com/v1/",
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
@@ -123,7 +137,7 @@ class CallManager:
         ws = None
         call = None
         try:
-            await self.action(call_id, "accept", acceptance(self.settings))
+            await self.action(call_id, "accept", acceptance(self.settings, self.instructions, self.tools))
             log.info("call=%s accept_ms=%.0f", call_id, (time.monotonic() - started) * 1000)
             url = "wss://api.openai.com/v1/realtime?call_id=" + quote(call_id, safe="")
             # Retry only attachment setup. After a connected socket is lost we cannot
@@ -141,7 +155,9 @@ class CallManager:
                     await asyncio.sleep(0.2)
             log.info("call=%s control_ready_ms=%.0f", call_id, (time.monotonic() - started) * 1000)
             try:
-                call = Call(self, call_id, ws)
+                call = Call(self, call_id, ws, greeting=self.greeting,
+                           handlers=self.handlers, validators=self.validators,
+                           closing_goodbye=self.closing_goodbye, closing_phrases=self.closing_phrases)
                 await call.run()
             finally:
                 await ws.close()
@@ -203,9 +219,19 @@ class CallManager:
         self.db.close()
 
 
+DEFAULT_CLOSING_PHRASES = ("thank you for choosing", "have a great day",
+                           "have an amazing day", "have a wonderful day")
+
+
 class Call:
-    def __init__(self, manager, call_id, ws):
+    def __init__(self, manager, call_id, ws, *, greeting=None, handlers=None, validators=None,
+                 closing_goodbye=None, closing_phrases=None):
         self.manager, self.call_id, self.ws = manager, call_id, ws
+        self.greeting = greeting if greeting is not None else AGENT_GREETING
+        self.handlers = handlers if handlers is not None else HANDLERS
+        self.validators = validators if validators is not None else VALIDATORS
+        self.closing_goodbye = closing_goodbye if closing_goodbye is not None else CLOSING_GOODBYE
+        self.closing_phrases = closing_phrases if closing_phrases is not None else DEFAULT_CLOSING_PHRASES
         self.pending: set[asyncio.Task] = set()
         self.seen: set[str] = set()
         self.bookings: set[tuple[str, str]] = set()
@@ -239,7 +265,7 @@ class Call:
     async def run(self):
         self.response_active = True
         await self.send({"type": "response.create", "response": {
-            "instructions": "Say exactly this greeting, then listen: " + AGENT_GREETING,
+            "instructions": "Say exactly this greeting, then listen: " + self.greeting,
             "tool_choice": "none",
         }})
         try:
@@ -354,9 +380,9 @@ class Call:
         started = time.monotonic()
         try:
             args = json.loads(event.get("arguments", ""))
-            if name not in VALIDATORS:
+            if name not in self.validators:
                 raise ValueError("unknown tool")
-            VALIDATORS[name].validate(args)
+            self.validators[name].validate(args)
             result = await self.execute(name, args)
         except (ValueError, ValidationError, TypeError):
             result = {"error": "Invalid tool arguments. Correct the request before proceeding."}
@@ -387,9 +413,7 @@ class Call:
 
     def _closing_said(self) -> bool:
         text = self.last_agent_text.lower()
-        return any(phrase in text for phrase in
-                    ("thank you for choosing", "have a great day",
-                     "have an amazing day", "have a wonderful day"))
+        return any(phrase in text for phrase in self.closing_phrases)
 
     async def execute(self, name, args):
         if name in {"transfer_to_human", "end_call"}:
@@ -404,7 +428,7 @@ class Call:
                 if not self.emergency_declared and not self._closing_said():
                     log.info("call=%s end_call_missing_goodbye=true", self.call_id)
                     await self.send({"type": "response.create", "response": {
-                        "instructions": "Say exactly this and nothing else: " + CLOSING_GOODBYE,
+                        "instructions": "Say exactly this and nothing else: " + self.closing_goodbye,
                         "tool_choice": "none",
                     }})
                     self.response_active = True
@@ -436,7 +460,7 @@ class Call:
                 key = "booked" if name == "book" else "rescheduled"
                 return {key: False, "error": "Already attempted this booking; transfer to verify, do not retry."}
             self.bookings.add(booking)
-        future = asyncio.get_running_loop().run_in_executor(self.manager.worker, HANDLERS[name], args)
+        future = asyncio.get_running_loop().run_in_executor(self.manager.worker, self.handlers[name], args)
         # A timed-out Google mutation may still finish in its worker. Never auto-retry.
         try:
             result = await asyncio.wait_for(asyncio.shield(future), timeout=20)
