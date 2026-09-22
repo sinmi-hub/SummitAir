@@ -37,5 +37,16 @@ class Settings:
     service_timezone: str = field(
         default_factory=lambda: _get("SERVICE_TIMEZONE", "America/New_York"))
 
+    # --- Outbound calling (outbound/) -- unused by the inbound SummitAir flow ---
+    telnyx_api_key: str = field(default_factory=lambda: _get("TELNYX_API"), repr=False)
+    telnyx_public_key: str = field(default_factory=lambda: _get("TELNYX_PUBLIC_KEY"), repr=False)
+    outbound_from_number: str = field(default_factory=lambda: _get("OUTBOUND_FROM_NUMBER"))
+    call_control_app_name: str = field(
+        default_factory=lambda: _get("CALL_CONTROL_APP_NAME", "summitair-outbound"))
+    # The same SIP URI already entered on Telnyx's dashboard for the inbound FQDN
+    # connection (deploy/README.md's "Translated Number") -- needed in code here
+    # because we, not Telnyx's dashboard config, issue the transfer that reaches it.
+    openai_sip_uri: str = field(default_factory=lambda: _get("OPENAI_SIP_URI"))
+
 
 settings = Settings()

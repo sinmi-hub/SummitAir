@@ -8,7 +8,7 @@ sudo apt-get update -qq
 sudo apt-get install -y python3-venv caddy
 id summitair >/dev/null 2>&1 || sudo useradd --system --home-dir /opt/summitair --shell /usr/sbin/nologin summitair
 sudo mkdir -p /opt/summitair
-sudo cp -R app config.py pyproject.toml /opt/summitair/
+sudo cp -R app outbound config.py pyproject.toml /opt/summitair/
 sudo python3 -m venv /opt/summitair/.venv
 sudo /opt/summitair/.venv/bin/pip install /opt/summitair
 sudo install -m 644 deploy/summitair.service /etc/systemd/system/summitair.service

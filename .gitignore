@@ -38,6 +38,8 @@ dist/
 /BACKLOG.md
 /AGENTS.md
 /PROGRESS.md
+/outbound/PROGRESS.md
+/outbound/astra-handoff.md
 
 # Local tools, editor settings, recordings, and scratch exports
 .agents/

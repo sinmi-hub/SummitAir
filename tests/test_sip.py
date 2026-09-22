@@ -41,7 +41,7 @@ def test_prompt_is_exact_file(tmp_path):
 
 def test_webhook_verification_and_limits(tmp_path):
     manager = SimpleNamespace(incoming=Mock(return_value=True), close=AsyncMock(), recover=AsyncMock())
-    app = create_app(config(tmp_path), lambda _: manager)
+    app = create_app(config(tmp_path), lambda *a, **k: manager)
     body = json.dumps({'type': 'realtime.call.incoming', 'data': {'call_id': 'rtc_test'}})
     with TestClient(app) as client:
         assert client.get('/health').json()['ok']
