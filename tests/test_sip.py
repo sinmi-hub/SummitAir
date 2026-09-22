@@ -275,6 +275,7 @@ async def test_socket_connection_failure_retries_then_hangs_up(tmp_path):
     await manager.close()
 
 async def test_end_call_waits_until_closing_is_played(call):
+    call.last_agent_text = 'Thank you for choosing Summit Air. Have a great day.'
     await call.event({'type': 'response.created'})
     await call.event({'type': 'output_audio_buffer.started'})
     ending = asyncio.create_task(call.execute('end_call', {}))
@@ -285,6 +286,48 @@ async def test_end_call_waits_until_closing_is_played(call):
     assert (await ending)['ended']
     call.manager.action.assert_awaited_once_with('rtc_test', 'hangup')
     assert call.ws.closed
+
+async def test_end_call_says_goodbye_itself_when_the_model_skipped_it(call):
+    call.last_agent_text = 'Alright, let me wrap this up for you.'
+    await call.event({'type': 'response.created'})
+    await call.event({'type': 'output_audio_buffer.started'})
+    ending = asyncio.create_task(call.execute('end_call', {}))
+    await call.event({'type': 'response.done'})
+    await call.event({'type': 'output_audio_buffer.stopped'})
+    await asyncio.sleep(0)
+    call.manager.action.assert_not_called()
+    goodbye = [m for m in call.ws.messages if m['type'] == 'response.create'
+              and 'Thank you for choosing' in m.get('response', {}).get('instructions', '')]
+    assert len(goodbye) == 1
+    await call.event({'type': 'response.created'})
+    await call.event({'type': 'output_audio_buffer.started'})
+    await call.event({'type': 'response.done'})
+    await call.event({'type': 'output_audio_buffer.stopped'})
+    assert (await ending)['ended']
+    call.manager.action.assert_awaited_once_with('rtc_test', 'hangup')
+
+async def test_end_call_skips_goodbye_injection_when_already_said(call):
+    call.last_agent_text = 'Thank you for choosing Summit Air. Have a great day.'
+    await call.event({'type': 'response.created'})
+    await call.event({'type': 'output_audio_buffer.started'})
+    ending = asyncio.create_task(call.execute('end_call', {}))
+    await call.event({'type': 'response.done'})
+    await call.event({'type': 'output_audio_buffer.stopped'})
+    assert (await ending)['ended']
+    assert not any(m['type'] == 'response.create' for m in call.ws.messages)
+    call.manager.action.assert_awaited_once_with('rtc_test', 'hangup')
+
+async def test_end_call_skips_goodbye_injection_during_emergency(call):
+    call.emergency_declared = True
+    call.last_agent_text = 'Please leave the building and call 911 immediately.'
+    await call.event({'type': 'response.created'})
+    await call.event({'type': 'output_audio_buffer.started'})
+    ending = asyncio.create_task(call.execute('end_call', {}))
+    await call.event({'type': 'response.done'})
+    await call.event({'type': 'output_audio_buffer.stopped'})
+    assert (await ending)['ended']
+    assert not any(m['type'] == 'response.create' for m in call.ws.messages)
+    call.manager.action.assert_awaited_once_with('rtc_test', 'hangup')
 
 async def test_no_audio_events_are_sent_or_relayed(call):
     await call.event({'type': 'response.output_audio.delta', 'delta': 'not-audio'})
