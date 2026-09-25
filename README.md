@@ -1,4 +1,8 @@
-# Summit Air: AI phone agent
+# Aria: AI phone agent
+
+Aria is a standalone Python voice-agent project, located at `~/Aria`.
+It includes the Summit Air inbound HVAC agent and an outbound calling module.
+The existing Summit Air persona and deployment configuration are retained.
 
 Summit Air runs 40 technicians across three counties, and its phones ring
 off the hook every time a heat wave or cold snap hits. This agent answers
@@ -18,13 +22,28 @@ After problem discovery, the agent collects relevant details to best understand 
 
 ```mermaid
 flowchart LR
-  Caller -->|dials in| Telnyx[Telnyx SIP trunk]
-  Telnyx -->|TLS/SRTP| Realtime["OpenAI Realtime API<br/>(gpt-realtime)"]
-  Realtime <-->|tool calls| Backend["app/realtime.py<br/>app/tools.py"]
-  Backend --> Sheets[("Google Sheets<br/>customer record")]
-  Backend --> Calendar[("Google Calendar<br/>technician availability")]
-  Backend -->|needs a person| Human[Transfer to on-call staff]
+  Caller(["Caller"]) -->|dials in| Telnyx["Telnyx SIP trunk"]
+  Telnyx <-->|"audio (TLS/SRTP)"| Realtime["OpenAI Realtime<br/>voice model"]
+
+  subgraph Backend["Aria backend"]
+    Control["app/realtime.py<br/>one control socket per call"]
+    Tools["app/tools.py<br/>booking tools"]
+    Research["app/research.py<br/>background watcher"]
+  end
+
+  Realtime <-->|"events + tool calls"| Control
+  Control --> Tools
+  Tools --> Sheets[("Google Sheets<br/>customer record")]
+  Tools --> Calendar[("Google Calendar<br/>technician availability")]
+  Control -->|needs a person| Human["Transfer to on-call staff"]
+
+  Control -.->|live transcript| Research
+  Research -.->|makes sense of it| Haiku["Claude Haiku"]
+  Research -.->|web search| Exa["Exa"]
+  Research -.->|"case file, as context only"| Control
 ```
+
+Solid arrows are the call itself. Dotted arrows are optional background research, which never holds up the conversation.
 
 ## Why these tools
 
@@ -40,9 +59,11 @@ The model runs off a fixed system prompt plus three narrow tools
 (`lookup`, `availability`, `book` in
 [`app/tools.py`](app/tools.py)). The model handles conversations, while the tools handle anything that touches a real record. This ensure that the model is not hallucinating, enough to schedule a time on calendar without need for tool use
 
-The backend is Python (FastAPI), holding one control WebSocket per active call and dispatching each tool call as the model requests it.
+The backend is Python (Starlette), holding one control WebSocket per active call and dispatching each tool call as the model requests it.
 
-Source code: **https://github.com/sinmi-hub/SummitAir**. Deployment and
+Optional background research: while the caller talks, Claude Haiku reads the live transcript (including garbled speech-to-text) and runs an Exa web search when a useful fact appears, such as an address. The findings reach the voice model as unverified context, never as a tool call, so Aria can confirm details instead of asking for them without ever pausing. It's off by default; set `RESEARCH_ENABLED=true`, `ANTHROPIC_API_KEY` and `EXA_API_KEY` to turn it on.
+
+Original repository: **https://github.com/sinmi-hub/SummitAir**. Deployment and
 cutover notes are in [`deploy/README.md`](deploy/README.md).
 
 ## Pausing the live demo
@@ -57,6 +78,7 @@ paused.
 Requires Python 3.11+.
 
 ```sh
+cd ~/Aria
 make install
 cp .env.example .env
 # Supply your own credentials

@@ -37,6 +37,20 @@ class Settings:
     service_timezone: str = field(
         default_factory=lambda: _get("SERVICE_TIMEZONE", "America/New_York"))
 
+    # --- Background research (app/research.py) -- inbound only, off by default ---
+    research_enabled: bool = field(default_factory=lambda: _get_bool("RESEARCH_ENABLED", False))
+    anthropic_api_key: str = field(default_factory=lambda: _get("ANTHROPIC_API_KEY"), repr=False)
+    anthropic_workspace_id: str = field(
+        default_factory=lambda: _get("ANTHROPIC_WORKSPACE_ID", "wrkspc_01UU536PFzGB7WjqWqrx3Fvz"))
+    exa_api_key: str = field(default_factory=lambda: _get("EXA_API_KEY"), repr=False)
+    # "fast" answers in about half a second; "deep" takes ~10s and only delays
+    # when the case file arrives, never the conversation.
+    exa_search_type: str = field(default_factory=lambda: _get("EXA_SEARCH_TYPE", "fast"))
+    watcher_model: str = field(
+        default_factory=lambda: _get("WATCHER_MODEL", "claude-haiku-4-5-20251001"))
+    research_max_searches: int = field(
+        default_factory=lambda: int(_get("RESEARCH_MAX_SEARCHES", "4")))
+
     # --- Outbound calling (outbound/) -- unused by the inbound SummitAir flow ---
     telnyx_api_key: str = field(default_factory=lambda: _get("TELNYX_API"), repr=False)
     telnyx_public_key: str = field(default_factory=lambda: _get("TELNYX_PUBLIC_KEY"), repr=False)

@@ -47,6 +47,7 @@ def create_app(config=settings, manager_factory=CallManager):
             greeting=outbound_persona.GREETING,
             closing_goodbye=outbound_persona.CLOSING_GOODBYE,
             closing_phrases=outbound_persona.CLOSING_PHRASES,
+            research=False,
         )
         cleanup_task = None
         try:
