@@ -8,6 +8,7 @@ import logging
 import re
 import sqlite3
 import time
+from uuid import uuid4
 from urllib.parse import quote
 
 import httpx
@@ -15,6 +16,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from websockets.asyncio.client import connect
 
 from app.agent.persona import AGENT_GREETING, CLOSING_GOODBYE, system_prompt
+from app.research import Researcher
 from app.tools import HANDLERS
 
 log = logging.getLogger("summitair")
@@ -58,9 +60,11 @@ def audio_input_config(interrupt_response: bool) -> dict:
     # rather than relying on a partial nested patch preserving siblings.
     return {
         "noise_reduction": {"type": "far_field"},
-        "turn_detection": {"type": "semantic_vad", "eagerness": "high",
+        "turn_detection": {"type": "semantic_vad", "eagerness": "low",
                            "interrupt_response": interrupt_response},
-        "transcription": {"model": "gpt-live-transcribe"},
+        # gpt-live-transcribe takes the plural `languages`, never `language`.
+        # Pinned to English: unclear audio was coming back as single Chinese characters.
+        "transcription": {"model": "gpt-live-transcribe", "languages": ["en"]},
     }
 
 
@@ -75,7 +79,7 @@ def acceptance(settings, instructions=None, tools=None) -> dict:
                 "output": {"voice": settings.openai_voice},
                 # interrupt_response starts false: the greeting must play in full,
                 # confirmed live -- it was getting cut short on effectively every
-                # test call. Restored to true after the greeting's response.done
+                # test call. Restored to true after the greeting's playback stops
                 # so normal barge-in works for the rest of the call.
                 "input": audio_input_config(interrupt_response=False),
             },
@@ -85,8 +89,11 @@ def acceptance(settings, instructions=None, tools=None) -> dict:
 class CallManager:
     def __init__(self, settings, http=None, socket_factory=connect, *,
                  instructions=None, tools=None, handlers=None, validators=None, greeting=None,
-                 closing_goodbye=None, closing_phrases=None):
+                 closing_goodbye=None, closing_phrases=None, research=None):
         self.settings = settings
+        # Background research is written for SummitAir's inbound flow; outbound
+        # passes research=False explicitly.
+        self.research = settings.research_enabled if research is None else research
         # Same defaulting rationale as acceptance() above.
         self.instructions = instructions if instructions is not None else system_prompt()
         self.tools = tools if tools is not None else TOOLS
@@ -157,7 +164,8 @@ class CallManager:
             try:
                 call = Call(self, call_id, ws, greeting=self.greeting,
                            handlers=self.handlers, validators=self.validators,
-                           closing_goodbye=self.closing_goodbye, closing_phrases=self.closing_phrases)
+                           closing_goodbye=self.closing_goodbye, closing_phrases=self.closing_phrases,
+                           research=self.research)
                 await call.run()
             finally:
                 await ws.close()
@@ -225,8 +233,11 @@ DEFAULT_CLOSING_PHRASES = ("thank you for choosing", "have a great day",
 
 class Call:
     def __init__(self, manager, call_id, ws, *, greeting=None, handlers=None, validators=None,
-                 closing_goodbye=None, closing_phrases=None):
+                 closing_goodbye=None, closing_phrases=None, research=False):
         self.manager, self.call_id, self.ws = manager, call_id, ws
+        self.researcher = Researcher(manager.settings, call_id) if research else None
+        self.research_task = None
+        self.research_item_id = None
         self.greeting = greeting if greeting is not None else AGENT_GREETING
         self.handlers = handlers if handlers is not None else HANDLERS
         self.validators = validators if validators is not None else VALIDATORS
@@ -248,6 +259,15 @@ class Call:
         self.transfer_attempted = False
         self.greeting_protected = True
         self.last_agent_text = ""
+        self.last_agent_response_id = None
+        self.playback_states = {}
+        self.response_epochs = {}
+        self.tagged_responses = {}
+        self.playback_changed = asyncio.Event()
+        self.speech_epoch = 0
+        self.caller_speaking = False
+        self.greeting_tag = None
+        self.greeting_attempts = 0
         self.emergency_declared = False
         self.last_event = None
         self.last_event_at = None
@@ -257,17 +277,88 @@ class Call:
         await self.ws.send(json.dumps(message))
 
     async def continue_response(self):
-        if self.needs_response and not self.response_active and not self.pending and not self.ending:
-            self.needs_response = False
-            self.response_active = True
-            await self.send({"type": "response.create"})
+        if not self.needs_response:
+            return
+        # Diagnostics for post-tool dead air: name every gate holding a pending reply.
+        gates = {"response_active": self.response_active, "pending_tools": bool(self.pending),
+                 "ending": self.ending, "greeting_protected": self.greeting_protected,
+                 "speaking": self.speaking, "caller_speaking": self.caller_speaking}
+        blocked = [name for name, on in gates.items() if on]
+        if blocked:
+            log.info("call=%s response_held_by=%s", self.call_id, ",".join(blocked))
+            return
+        self.needs_response = False
+        self.response_active = True
+        log.info("call=%s response_requested", self.call_id)
+        await self.send({"type": "response.create"})
 
-    async def run(self):
+    async def request_greeting(self):
+        self.greeting_attempts += 1
+        self.greeting_tag = uuid4().hex
         self.response_active = True
         await self.send({"type": "response.create", "response": {
+            "metadata": {"playback_gate": self.greeting_tag},
             "instructions": "Say exactly this greeting, then listen: " + self.greeting,
             "tool_choice": "none",
         }})
+
+    async def update_greeting_gate(self):
+        response_id = self.tagged_responses.get(self.greeting_tag)
+        state = self.playback_states.get(response_id)
+        if not self.greeting_protected or state not in {"stopped", "cleared", "failed"}:
+            return
+        if state != "stopped":
+            if self.response_active:
+                return
+            if self.greeting_attempts >= 2:
+                raise RuntimeError("Greeting playback could not complete")
+            log.info("call=%s greeting_retry response_id=%s reason=%s", self.call_id, response_id, state)
+            await self.request_greeting()
+            return
+        self.greeting_protected = False
+        log.info("call=%s greeting_playback_complete response_id=%s", self.call_id, response_id)
+        await self.send({"type": "session.update", "session": {
+            "type": "realtime", "audio": {"input": audio_input_config(True)},
+        }})
+        await self.continue_response()
+
+    async def wait_for_goodbye(self, response_id, tag, speech_epoch):
+        async with asyncio.timeout(30):
+            while True:
+                self.playback_changed.clear()
+                if self.speech_epoch != speech_epoch or self.caller_speaking:
+                    return False
+                target = self.tagged_responses.get(tag) if tag else response_id
+                state = self.playback_states.get(target)
+                if state in {"stopped", "cleared", "failed"}:
+                    return state == "stopped"
+                await self.playback_changed.wait()
+
+    async def inject_research(self, text):
+        # Context only: no response.create, so this never makes the agent speak.
+        # One current case file -- the previous one is deleted, not stacked.
+        if self.ending or self.emergency_declared:
+            return
+        previous, self.research_item_id = self.research_item_id, "research_" + uuid4().hex[:16]
+        if previous:
+            await self.send({"type": "conversation.item.delete",
+                             "event_id": "research-" + uuid4().hex[:16], "item_id": previous})
+        await self.send({"type": "conversation.item.create",
+                         "event_id": "research-" + uuid4().hex[:16], "item": {
+                             "id": self.research_item_id, "type": "message", "role": "system",
+                             "content": [{"type": "input_text", "text": text}]}})
+        # Everything after the fixed header line, so the log shows exactly what Aria saw.
+        log.info("call=%s research_injected item=%s case_file=%r", self.call_id,
+                 self.research_item_id, text.split("\n", 1)[-1])
+
+    def stop_research(self):
+        if self.research_task:
+            self.research_task.cancel()
+
+    async def run(self):
+        await self.request_greeting()
+        if self.researcher:
+            self.research_task = asyncio.create_task(self.researcher.run(self.inject_research))
         try:
             async for raw in self.ws:
                 event = json.loads(raw)
@@ -275,10 +366,14 @@ class Call:
                 if self.ending:
                     break
         finally:
-            tasks = list(self.pending)
+            # Every exit path -- end_call, transfer, hangup, dropped socket,
+            # shutdown -- lands here, so research can never outlive its call.
+            tasks = list(self.pending) + ([self.research_task] if self.research_task else [])
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if self.researcher:
+                await self.researcher.close()
 
     async def event(self, event):
         kind = event.get("type")
@@ -288,24 +383,34 @@ class Call:
         if kind == "response.created":
             self.response_active = True
             self.playback_idle.clear()
+            response = event.get("response", {})
+            response_id = response.get("id")
+            if response_id:
+                self.response_epochs[response_id] = self.speech_epoch
+                tag = (response.get("metadata") or {}).get("playback_gate")
+                if tag:
+                    self.tagged_responses[tag] = response_id
+                self.playback_changed.set()
         elif kind == "response.done":
             self.response_active = False
+            response = event.get("response", {})
+            details = response.get("status_details") or {}
+            log.info("call=%s response_done id=%s status=%s reason=%s outputs=%s", self.call_id,
+                     response.get("id"), response.get("status"),
+                     details.get("reason") or (details.get("error") or {}).get("code"),
+                     ",".join(item.get("type", "?") for item in response.get("output") or []) or "none")
+            if response.get("id") and response.get("status") in {"cancelled", "failed", "incomplete"}:
+                self.playback_states[response["id"]] = "failed"
+                self.playback_changed.set()
             if not self.speaking:
                 self.playback_idle.set()
-            if self.greeting_protected:
-                # The greeting (the very first response) just finished playing in
-                # full, uninterrupted. Restore normal barge-in for the rest of the
-                # call. Any real caller turn that landed during the greeting still
-                # gets answered -- create_response stays on, the server's attempt
-                # to auto-respond to it while our greeting response was active
-                # returns conversation_already_has_active_response, which
-                # continue_response()'s needs_response retry already handles.
-                self.greeting_protected = False
-                await self.send({"type": "session.update",
-                                  "session": {"type": "realtime",
-                                              "audio": {"input": audio_input_config(True)}}})
+            await self.update_greeting_gate()
             await self.continue_response()
         elif kind == "output_audio_buffer.started":
+            response_id = event.get("response_id")
+            log.info("call=%s playback=started response_id=%s", self.call_id, response_id)
+            if response_id:
+                self.playback_states.setdefault(response_id, "started")
             self.speaking = True
             self.playback_idle.clear()
             if self.speech_stopped_at is not None:
@@ -313,18 +418,28 @@ class Call:
                          (time.monotonic() - self.speech_stopped_at) * 1000)
                 self.speech_stopped_at = None
         elif kind in {"output_audio_buffer.stopped", "output_audio_buffer.cleared"}:
+            response_id = event.get("response_id")
+            state = kind.rsplit(".", 1)[1]
+            log.info("call=%s playback=%s response_id=%s", self.call_id, state, response_id)
+            if response_id and self.playback_states.get(response_id) not in {"cleared", "failed"}:
+                self.playback_states[response_id] = state
+            self.playback_changed.set()
             if kind == "output_audio_buffer.cleared" and self.speaking:
                 log.info("call=%s agent_speech_interrupted=true", self.call_id)
             self.speaking = False
             self.agent_audio_stopped_at = time.monotonic()
             if not self.response_active:
                 self.playback_idle.set()
+            await self.update_greeting_gate()
+            await self.continue_response()
         elif kind == "input_audio_buffer.speech_started":
+            self.speech_epoch += 1
+            self.caller_speaking = True
+            self.playback_changed.set()
             # No amplitude gate exists on semantic_vad (unlike server_vad's
             # threshold), so this can fire on a low-level artifact rather than
-            # real speech. Logged only; nothing acts on it. during_agent_speech
-            # separates leaked playback from a false trigger on true silence;
-            # those need different fixes.
+            # real speech. Conservatively defer a pending goodbye on any new
+            # speech signal. during_agent_speech helps diagnose false triggers.
             self.speech_started_audio_ms = event.get("audio_start_ms")
             since_agent_stopped = (
                 None if self.agent_audio_stopped_at is None
@@ -333,6 +448,7 @@ class Call:
             log.info("call=%s speech_started item=%s during_agent_speech=%s since_agent_stopped_ms=%s",
                       self.call_id, event.get("item_id"), self.speaking, since_agent_stopped)
         elif kind == "input_audio_buffer.speech_stopped":
+            self.caller_speaking = False
             self.speech_stopped_at = time.monotonic()
             audio_end_ms = event.get("audio_end_ms")
             duration_ms = (
@@ -342,25 +458,44 @@ class Call:
             log.info("call=%s speech_stopped item=%s detected_duration_ms=%s",
                       self.call_id, event.get("item_id"), duration_ms)
         elif kind == "conversation.item.input_audio_transcription.completed":
+            log.info("call=%s transcript_ref=caller item_id=%s", self.call_id, event.get("item_id"))
             log.info("call=%s caller_said=%r", self.call_id, event.get("transcript", ""))
+            if self.researcher:
+                self.researcher.heard("customer", event.get("transcript") or "")
         elif kind == "response.output_audio_transcript.done":
             self.last_agent_text = event.get("transcript") or ""
+            self.last_agent_response_id = event.get("response_id")
+            log.info("call=%s transcript_ref=agent response_id=%s item_id=%s", self.call_id,
+                     self.last_agent_response_id, event.get("item_id"))
             # Grounds the end_call goodbye gate below in what the emergency
             # instruction actually requires the model to say, not a guess.
             if "911" in self.last_agent_text:
                 self.emergency_declared = True
+                self.stop_research()
             log.info("call=%s agent_said=%r", self.call_id, self.last_agent_text)
+            if self.researcher:
+                used = self.researcher.used_in(self.last_agent_text)
+                if used:
+                    log.info("call=%s case_file_used=%s item=%s", self.call_id,
+                             ",".join(used), self.research_item_id)
+                self.researcher.heard("agent", self.last_agent_text)
         elif kind == "response.function_call_arguments.done":
             invocation = event.get("call_id")
             if not isinstance(invocation, str) or invocation in self.seen:
                 return
             self.seen.add(invocation)
+            log.info("call=%s tool_requested=%s response_id=%s invocation=%s", self.call_id,
+                     event.get("name"), event.get("response_id"), invocation)
             task = asyncio.create_task(self.tool(event))
             self.pending.add(task)
             task.add_done_callback(self.tool_finished)
         elif kind == "error":
-            code = event.get("error", {}).get("code", "unknown")
-            log.warning("call=%s realtime_error=%s", self.call_id, code)
+            error = event.get("error") or {}
+            code = error.get("code", "unknown")
+            log.warning("call=%s realtime_error=%s event_id=%s message=%r", self.call_id, code,
+                        error.get("event_id"), error.get("message"))
+            if str(error.get("event_id") or "").startswith("research-"):
+                return  # Research is best-effort; a rejected injection never ends a call.
             if code == "conversation_already_has_active_response":
                 self.response_active = True
                 self.needs_response = True
@@ -383,7 +518,7 @@ class Call:
             if name not in self.validators:
                 raise ValueError("unknown tool")
             self.validators[name].validate(args)
-            result = await self.execute(name, args)
+            result = await self.execute(name, args, response_id=event.get("response_id"))
         except (ValueError, ValidationError, TypeError):
             result = {"error": "Invalid tool arguments. Correct the request before proceeding."}
         except asyncio.CancelledError:
@@ -415,28 +550,41 @@ class Call:
         text = self.last_agent_text.lower()
         return any(phrase in text for phrase in self.closing_phrases)
 
-    async def execute(self, name, args):
+    async def execute(self, name, args, *, response_id=None):
         if name in {"transfer_to_human", "end_call"}:
+            speech_epoch = self.speech_epoch
             # response.done is generation completion, not audible playback completion.
             await asyncio.wait_for(self.playback_idle.wait(), timeout=30)
             if name == "end_call":
-                # Confirmed live, three separate calls: the model reliably invokes
-                # end_call after a generic "let me wrap this up" line instead of the
-                # specific closing text CALL CLOSING requires. Rather than trust the
-                # prompt again, say it ourselves before the hangup actually happens
-                # -- skipped for an emergency close, where a goodbye is wrong.
-                if not self.emergency_declared and not self._closing_said():
+                if (self.caller_speaking or self.speech_epoch != speech_epoch
+                        or self.playback_states.get(response_id) in {"cleared", "failed"}
+                        or (response_id in self.response_epochs
+                            and self.response_epochs[response_id] != speech_epoch)):
+                    return {"ended": False, "reason": "Caller resumed speaking; respond before ending the call."}
+                target = self.last_agent_response_id
+                tag = None
+                closing_is_current = (target is not None and self.response_epochs.get(target) == speech_epoch
+                                      and (self._closing_said() or "911" in self.last_agent_text))
+                if not closing_is_current:
                     log.info("call=%s end_call_missing_goodbye=true", self.call_id)
+                    tag = uuid4().hex
+                    self.response_active = True
+                    self.playback_idle.clear()
                     await self.send({"type": "response.create", "response": {
+                        "metadata": {"playback_gate": tag},
                         "instructions": "Say exactly this and nothing else: " + self.closing_goodbye,
                         "tool_choice": "none",
                     }})
-                    self.response_active = True
-                    self.playback_idle.clear()
-                    await asyncio.wait_for(self.playback_idle.wait(), timeout=30)
-                # Logged before hangup/close: closing the socket here races
-                # Call.run()'s read loop, which can cancel this task's own
-                # finally-block "tool=end_call" log before it runs.
+                try:
+                    completed = await self.wait_for_goodbye(target, tag, speech_epoch)
+                except TimeoutError:
+                    log.warning("call=%s goodbye_playback_timeout=true", self.call_id)
+                    return {"ended": False, "reason": "Goodbye playback was not confirmed. Do not claim the call ended."}
+                if not completed:
+                    log.info("call=%s end_call_deferred=interrupted", self.call_id)
+                    return {"ended": False, "reason": "Goodbye interrupted; respond to the caller before ending."}
+                log.info("call=%s goodbye_playback_complete response_id=%s", self.call_id,
+                         self.tagged_responses.get(tag) if tag else target)
                 log.info("call=%s invoking=end_call", self.call_id)
                 await self.manager.action(self.call_id, "hangup")
                 self.ending = True
