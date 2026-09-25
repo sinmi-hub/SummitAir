@@ -168,19 +168,28 @@ async def test_tool_output_waits_for_active_response(call):
 async def test_acceptance_starts_with_interrupt_response_disabled(tmp_path):
     payload = acceptance(config(tmp_path))
     assert payload['audio']['input']['turn_detection']['interrupt_response'] is False
+    transcription = payload['audio']['input']['transcription']
+    assert transcription['languages'] == ['en'] and 'language' not in transcription
+    assert payload['audio']['input']['turn_detection']['eagerness'] == 'low'
 
-async def test_greeting_protection_restores_interrupt_response_once(call):
-    assert call.greeting_protected is False  # fixture default
-    call.greeting_protected = True  # simulate the still-mid-greeting state
-    await call.event({'type': 'response.done'})
-    assert call.ws.messages == [{'type': 'session.update', 'session': {'type': 'realtime', 'audio': {'input': {
-        'noise_reduction': {'type': 'far_field'},
-        'turn_detection': {'type': 'semantic_vad', 'eagerness': 'high', 'interrupt_response': True},
-        'transcription': {'model': 'gpt-live-transcribe'},
-    }}}}]
-    assert call.greeting_protected is False
-    await call.event({'type': 'response.done'})  # a later response finishing should not re-send it
-    assert len(call.ws.messages) == 1
+async def test_greeting_protection_restores_only_after_matching_playback(call):
+    call.greeting_protected = True
+    await call.request_greeting()
+    tag = call.ws.messages[-1]['response']['metadata']['playback_gate']
+    await call.event({'type': 'response.created', 'response': {'id': 'greeting', 'metadata': {'playback_gate': tag}}})
+    await call.event({'type': 'output_audio_buffer.started', 'response_id': 'greeting'})
+    await call.event({'type': 'response.done', 'response': {'id': 'greeting', 'status': 'completed'}})
+    assert call.greeting_protected
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'unrelated'})
+    assert call.greeting_protected
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'greeting'})
+    assert not call.greeting_protected
+    updates = [m for m in call.ws.messages if m['type'] == 'session.update']
+    assert len(updates) == 1
+    assert updates[0]['session']['audio']['input']['turn_detection'] == {
+        'type': 'semantic_vad', 'eagerness': 'low', 'interrupt_response': True}
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'greeting'})
+    assert len([m for m in call.ws.messages if m['type'] == 'session.update']) == 1
 
 async def test_transfer_waits_for_playback_and_does_not_claim_answer(call):
     await call.event({'type': 'response.created'})
@@ -275,56 +284,64 @@ async def test_socket_connection_failure_retries_then_hangs_up(tmp_path):
     await manager.close()
 
 async def test_end_call_waits_until_closing_is_played(call):
+    call.last_agent_response_id = 'closing'
     call.last_agent_text = 'Thank you for choosing Summit Air. Have a great day.'
-    await call.event({'type': 'response.created'})
-    await call.event({'type': 'output_audio_buffer.started'})
+    await call.event({'type': 'response.created', 'response': {'id': 'closing'}})
+    await call.event({'type': 'output_audio_buffer.started', 'response_id': 'closing'})
     ending = asyncio.create_task(call.execute('end_call', {}))
     await call.event({'type': 'response.done'})
     await asyncio.sleep(0)
     call.manager.action.assert_not_called()
-    await call.event({'type': 'output_audio_buffer.stopped'})
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'closing'})
     assert (await ending)['ended']
     call.manager.action.assert_awaited_once_with('rtc_test', 'hangup')
     assert call.ws.closed
 
 async def test_end_call_says_goodbye_itself_when_the_model_skipped_it(call):
+    call.last_agent_response_id = 'closing'
     call.last_agent_text = 'Alright, let me wrap this up for you.'
-    await call.event({'type': 'response.created'})
-    await call.event({'type': 'output_audio_buffer.started'})
+    await call.event({'type': 'response.created', 'response': {'id': 'closing'}})
+    await call.event({'type': 'output_audio_buffer.started', 'response_id': 'closing'})
     ending = asyncio.create_task(call.execute('end_call', {}))
     await call.event({'type': 'response.done'})
-    await call.event({'type': 'output_audio_buffer.stopped'})
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'closing'})
     await asyncio.sleep(0)
     call.manager.action.assert_not_called()
     goodbye = [m for m in call.ws.messages if m['type'] == 'response.create'
               and 'Thank you for choosing' in m.get('response', {}).get('instructions', '')]
     assert len(goodbye) == 1
-    await call.event({'type': 'response.created'})
-    await call.event({'type': 'output_audio_buffer.started'})
+    tag = goodbye[0]['response']['metadata']['playback_gate']
+    await call.event({'type': 'response.created', 'response': {'id': 'injected', 'metadata': {'playback_gate': tag}}})
+    await call.event({'type': 'output_audio_buffer.started', 'response_id': 'injected'})
     await call.event({'type': 'response.done'})
-    await call.event({'type': 'output_audio_buffer.stopped'})
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'closing'})
+    await asyncio.sleep(0)
+    call.manager.action.assert_not_called()
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'injected'})
     assert (await ending)['ended']
     call.manager.action.assert_awaited_once_with('rtc_test', 'hangup')
 
 async def test_end_call_skips_goodbye_injection_when_already_said(call):
+    call.last_agent_response_id = 'closing'
     call.last_agent_text = 'Thank you for choosing Summit Air. Have a great day.'
-    await call.event({'type': 'response.created'})
-    await call.event({'type': 'output_audio_buffer.started'})
+    await call.event({'type': 'response.created', 'response': {'id': 'closing'}})
+    await call.event({'type': 'output_audio_buffer.started', 'response_id': 'closing'})
     ending = asyncio.create_task(call.execute('end_call', {}))
     await call.event({'type': 'response.done'})
-    await call.event({'type': 'output_audio_buffer.stopped'})
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'closing'})
     assert (await ending)['ended']
     assert not any(m['type'] == 'response.create' for m in call.ws.messages)
     call.manager.action.assert_awaited_once_with('rtc_test', 'hangup')
 
 async def test_end_call_skips_goodbye_injection_during_emergency(call):
     call.emergency_declared = True
+    call.last_agent_response_id = 'closing'
     call.last_agent_text = 'Please leave the building and call 911 immediately.'
-    await call.event({'type': 'response.created'})
-    await call.event({'type': 'output_audio_buffer.started'})
+    await call.event({'type': 'response.created', 'response': {'id': 'closing'}})
+    await call.event({'type': 'output_audio_buffer.started', 'response_id': 'closing'})
     ending = asyncio.create_task(call.execute('end_call', {}))
     await call.event({'type': 'response.done'})
-    await call.event({'type': 'output_audio_buffer.stopped'})
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'closing'})
     assert (await ending)['ended']
     assert not any(m['type'] == 'response.create' for m in call.ws.messages)
     call.manager.action.assert_awaited_once_with('rtc_test', 'hangup')
@@ -333,3 +350,118 @@ async def test_no_audio_events_are_sent_or_relayed(call):
     await call.event({'type': 'response.output_audio.delta', 'delta': 'not-audio'})
     await call.event({'type': 'input_audio_buffer.speech_started'})
     assert not call.ws.messages
+
+async def test_interrupted_greeting_retries_and_ignores_old_stop(call):
+    call.greeting_protected = True
+    await call.request_greeting()
+    first_tag = call.greeting_tag
+    await call.event({'type': 'response.created', 'response': {
+        'id': 'first', 'metadata': {'playback_gate': first_tag}}})
+    await call.event({'type': 'output_audio_buffer.started', 'response_id': 'first'})
+    await call.event({'type': 'output_audio_buffer.cleared', 'response_id': 'first'})
+    assert call.greeting_protected
+    assert call.greeting_tag == first_tag  # wait for generation to finish before retry
+    await call.event({'type': 'response.done', 'response': {'id': 'first', 'status': 'cancelled'}})
+    assert call.greeting_tag != first_tag
+    assert call.greeting_protected
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'first'})
+    assert call.greeting_protected
+    await call.event({'type': 'response.created', 'response': {
+        'id': 'second', 'metadata': {'playback_gate': call.greeting_tag}}})
+    await call.event({'type': 'response.done', 'response': {'id': 'second', 'status': 'completed'}})
+    assert call.greeting_protected
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'second'})
+    assert not call.greeting_protected
+
+
+@pytest.mark.parametrize('interruption', ['output_audio_buffer.cleared', 'input_audio_buffer.speech_started'])
+async def test_interrupted_goodbye_never_hangs_up_on_later_stop(call, interruption):
+    await call.event({'type': 'response.created', 'response': {'id': 'bye'}})
+    await call.event({'type': 'output_audio_buffer.started', 'response_id': 'bye'})
+    await call.event({'type': 'response.output_audio_transcript.done', 'response_id': 'bye',
+                      'transcript': 'Thank you for choosing Summit Air.'})
+    ending = asyncio.create_task(call.execute('end_call', {}, response_id='bye'))
+    await asyncio.sleep(0)
+    await call.event({'type': 'response.done', 'response': {'id': 'bye', 'status': 'completed'}})
+    await call.event({'type': interruption, 'response_id': 'bye'})
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'bye'})
+    assert not (await ending)['ended']
+    call.manager.action.assert_not_called()
+    assert not call.ws.closed
+
+
+async def test_interrupted_injected_goodbye_returns_to_conversation(call):
+    ending = asyncio.create_task(call.execute('end_call', {}))
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if call.ws.messages:
+            break
+    tag = call.ws.messages[-1]['response']['metadata']['playback_gate']
+    await call.event({'type': 'response.created', 'response': {
+        'id': 'injected', 'metadata': {'playback_gate': tag}}})
+    await call.event({'type': 'output_audio_buffer.started', 'response_id': 'injected'})
+    await call.event({'type': 'input_audio_buffer.speech_started'})
+    await call.event({'type': 'output_audio_buffer.cleared', 'response_id': 'injected'})
+    assert not (await ending)['ended']
+    call.manager.action.assert_not_called()
+    assert not call.ending
+
+
+async def test_end_call_from_response_before_caller_resumed_is_rejected(call):
+    await call.event({'type': 'response.created', 'response': {'id': 'old'}})
+    await call.event({'type': 'response.done', 'response': {'id': 'old', 'status': 'completed'}})
+    await call.event({'type': 'input_audio_buffer.speech_started'})
+    await call.event({'type': 'input_audio_buffer.speech_stopped'})
+    await call.tool({'name': 'end_call', 'call_id': 'tool_end', 'response_id': 'old', 'arguments': '{}'})
+    outputs = [m for m in call.ws.messages if m['type'] == 'conversation.item.create']
+    assert json.loads(outputs[0]['item']['output'])['ended'] is False
+    call.manager.action.assert_not_called()
+
+
+async def test_goodbye_timeout_does_not_hang_up(call):
+    with patch.object(call, 'wait_for_goodbye', new=AsyncMock(side_effect=TimeoutError)):
+        result = await call.execute('end_call', {})
+    assert result['ended'] is False
+    call.manager.action.assert_not_called()
+
+
+async def test_generated_goodbye_without_matching_playback_does_not_end(call):
+    await call.event({'type': 'response.created', 'response': {'id': 'bye'}})
+    await call.event({'type': 'response.output_audio_transcript.done', 'response_id': 'bye',
+                      'transcript': 'Thank you for choosing Summit Air.'})
+    await call.event({'type': 'response.done', 'response': {'id': 'bye', 'status': 'completed'}})
+    ending = asyncio.create_task(call.execute('end_call', {}, response_id='bye'))
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'other'})
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not ending.done()
+    call.manager.action.assert_not_called()
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'bye'})
+    assert (await ending)['ended']
+
+async def test_greeting_retry_is_bounded(call):
+    call.greeting_protected = True
+    await call.request_greeting()
+    for index in range(2):
+        response_id = f'greeting_{index}'
+        await call.event({'type': 'response.created', 'response': {
+            'id': response_id, 'metadata': {'playback_gate': call.greeting_tag}}})
+        event = {'type': 'response.done', 'response': {'id': response_id, 'status': 'failed'}}
+        if index == 0:
+            await call.event(event)
+        else:
+            with pytest.raises(RuntimeError, match='Greeting playback'):
+                await call.event(event)
+    assert call.greeting_protected
+    assert call.greeting_attempts == 2
+    assert not any(m['type'] == 'session.update' for m in call.ws.messages)
+
+
+async def test_failed_goodbye_generation_does_not_hang_up(call):
+    await call.event({'type': 'response.created', 'response': {'id': 'bye'}})
+    await call.event({'type': 'response.output_audio_transcript.done', 'response_id': 'bye',
+                      'transcript': 'Thank you for choosing Summit Air.'})
+    await call.event({'type': 'response.done', 'response': {'id': 'bye', 'status': 'failed'}})
+    await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'bye'})
+    assert not (await call.execute('end_call', {}, response_id='bye'))['ended']
+    call.manager.action.assert_not_called()
