@@ -3,7 +3,7 @@ from pathlib import Path
 
 AGENT_NAME = "Aria"
 AGENT_GREETING = (
-    "Thanks for calling Summit Air Heating and Cooling, this is Aria. "
+    "Thanks for calling Summit Air Heating and Cooling, this is Aria, an AI assistant. "
     "How can I help you today?"
 )
 # Spoken by the code itself if end_call fires without this having been said --
