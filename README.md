@@ -46,8 +46,17 @@ flowchart LR
   class Tools,Records tools
   class Watcher,Search,Case research
 
-  style Flow1 fill:transparent,stroke:#888,stroke-dasharray:4 4
-  style Flow2 fill:transparent,stroke:#888,stroke-dasharray:4 4
+  subgraph Key["Key"]
+    direction LR
+    K1["Call path"] ~~~ K2["Tools and records"] ~~~ K3["Background research"]
+  end
+  class K1 voice
+  class K2 tools
+  class K3 research
+
+  style Flow1 fill:transparent,stroke:#16a34a,stroke-dasharray:4 4
+  style Flow2 fill:transparent,stroke:#ea580c,stroke-dasharray:4 4
+  style Key fill:transparent,stroke:#888
 ```
 
 Sequence of call is split into 2 flows in the main application for real time calls.(app/realtime.py)
