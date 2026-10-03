@@ -39,7 +39,6 @@ dist/
 /PROGRESS.md
 /outbound/PROGRESS.md
 /outbound/SYSTEM-PROMPT.md
-/outbound/astra-handoff.md
 
 # Local tools, editor settings, recordings, and scratch exports
 .agents/
