@@ -5,5 +5,8 @@
     handle /webhooks/openai {
         reverse_proxy 127.0.0.1:8000
     }
+    handle /webhooks/telnyx-outbound {
+        reverse_proxy 127.0.0.1:8000
+    }
     respond 404
 }
