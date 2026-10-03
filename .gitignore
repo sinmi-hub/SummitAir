@@ -34,7 +34,6 @@ dist/
 
 # Private deployment history
 /deploy/STATUS.md
-/temp.md
 /BACKLOG.md
 /AGENTS.md
 /PROGRESS.md
