@@ -12,6 +12,8 @@ import time
 import httpx
 from jsonschema import Draft202012Validator
 
+from app.research import manufacturer
+
 log = logging.getLogger("summitair")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 EXA_URL = "https://api.exa.ai/search"
@@ -41,6 +43,8 @@ RESEARCH_SUGGESTS = _slots({
 RESEARCH_SUGGESTS["properties"]["notes"] = {"type": "array", "items": {"type": "string"},
                                             "description": "Other short facts about this property or equipment."}
 RESEARCH_SUGGESTS["required"].append("notes")
+RESEARCH_SUGGESTS["properties"]["manufacturer_guidance"] = manufacturer.GUIDANCE
+RESEARCH_SUGGESTS["required"].append("manufacturer_guidance")
 CASE = {"type": "object", "additionalProperties": False, "required": ["customer_said", "research_suggests", "check"],
         "properties": {
             "customer_said": CUSTOMER_SAID,
@@ -74,7 +78,9 @@ Search when a new, specific fact appears that the web can add to: a property you
 
 Each request also carries facts the system tracks exactly: the digit count of every number the customer said, and the checks Aria has already been shown, with whether the customer has answered since. Rely on them rather than recounting or guessing.
 
-Always answer by calling update_case. The system reads only that tool call, so anything else is lost."""
+{manufacturer}
+
+Always answer by calling update_case. The system reads only that tool call, so anything else is lost.""".replace("{manufacturer}", manufacturer.PROMPT)
 
 
 def render(case: dict) -> str:
@@ -92,6 +98,7 @@ def render(case: dict) -> str:
          [f"- {label}: {research[key][:200]}" for key, label in research_labels
           if research.get(key) and research[key] != "unknown"]
          + [f"- {note[:200]}" for note in research.get("notes", [])]),
+        manufacturer.section(research),
         ("Check with the customer (ask about these specifically):",
          [f"- {c['detail'][:120]}: {c['reason'][:200]}" for c in case.get("check", [])]),
     ]

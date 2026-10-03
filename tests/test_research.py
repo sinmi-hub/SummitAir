@@ -11,7 +11,8 @@ from app.research import Researcher, render
 from tests.test_sip import Socket, config
 
 SAID = {"issue": "", "equipment": "", "address": "", "zip": "", "phone": "", "property_type": "", "unit_number": ""}
-RESEARCH = {"property_type": "unknown", "unit_number_needed": "unknown", "zip": "", "notes": []}
+RESEARCH = {"property_type": "unknown", "unit_number_needed": "unknown", "zip": "", "notes": [],
+            "manufacturer_guidance": {"source": "", "steps": []}}
 
 
 def case(check=(), notes=(), research=None, **said):
@@ -265,3 +266,11 @@ def test_a_phone_number_that_is_not_ten_digits_is_flagged_once(tmp_path):
         assert check["reason"] == f"{len(number)} digits; a phone number has 10"
     r.answered.add("phone number 2021048899828")
     assert r.phone_check(case(phone="2021048899828"))["check"] == []  # answered: not raised again
+
+
+def test_manufacturer_guidance_renders_as_its_own_credited_section():
+    guidance = {"source": "Carrier furnace manual", "steps": ["Check the air filter", "Reset the breaker"]}
+    text = render(case(equipment="Carrier furnace", research={"manufacturer_guidance": guidance}))
+    assert "Manufacturer guidance (from Carrier furnace manual; credit the manufacturer" in text
+    assert "- Check the air filter" in text and "- Reset the breaker" in text
+    assert "Manufacturer guidance" not in render(case(equipment="Carrier furnace"))
