@@ -95,26 +95,6 @@ def render(case: dict) -> str:
             + "\n".join(lines))
 
 
-DIGIT_WORDS = {"zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
-               "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"}
-# One property type per group. A line naming two groups is the open question
-# ("residential or commercial?"), not a use of the case file.
-PROPERTY_WORDS = {"residential": ("single-family", "single family", "residential", "townhouse"),
-                  "apartment": ("apartment", "condo"),
-                  "commercial": ("commercial", "business", "office")}
-
-
-def _digits(text: str) -> str:
-    # "two zero seven zero seven" and "20707" both become "20707"; other words split runs.
-    tokens = re.findall(r"[a-z]+|\d", text.lower())
-    return "".join(DIGIT_WORDS.get(t, t) if t.isdigit() or t in DIGIT_WORDS else " " for t in tokens)
-
-
-def _property_groups(text: str) -> set[str]:
-    text = text.lower()
-    return {kind for kind, words in PROPERTY_WORDS.items() if any(w in text for w in words)}
-
-
 class Researcher:
     def __init__(self, settings, call_id: str, http: httpx.AsyncClient | None = None):
         self.settings, self.call_id = settings, call_id
@@ -139,21 +119,6 @@ class Researcher:
                 # was shown, and the customer has now spoken.
                 self.answered |= {d for d, shown_at in self.shown.items() if self.agent_lines > shown_at}
                 self.changed.set()
-
-    def used_in(self, agent_text: str) -> list[str]:
-        """Trace only: case-file details the agent just spoke that the customer never
-        said -- the only place the agent could have learned them. Never feeds logic."""
-        customer = " ".join(text for role, text in self.transcript if role == "customer")
-        used = []
-        research = self.case.get("research_suggests", {})
-        zip_code = re.sub(r"\D", "", research.get("zip", ""))
-        if len(zip_code) == 5 and zip_code in _digits(agent_text) and zip_code not in _digits(customer):
-            used.append("zip")
-        kind = research.get("property_type")
-        if (kind in PROPERTY_WORDS and _property_groups(agent_text) == {kind}
-                and kind not in _property_groups(customer)):
-            used.append("property_type")
-        return used
 
     async def run(self, inject):
         # One pass at a time. Lines that arrive during a pass only set the event,
@@ -206,7 +171,7 @@ class Researcher:
 
     def phone_check(self, case: dict) -> dict:
         # The one objective check done in code: a phone number is 10 digits. Haiku missed
-        # a 13-digit number even with the exact count in its facts. Asked once, like any check.
+        # a 13-digit number even when it was given the exact digit count. Asked once, like any check.
         digits = re.sub(r"\D", "", case.get("customer_said", {}).get("phone", ""))
         check = {"detail": f"phone number {digits}", "reason": f"{len(digits)} digits; a phone number has 10"}
         if not digits or len(digits) == 10 or check["detail"] in self.answered:
@@ -214,15 +179,10 @@ class Researcher:
         return {**case, "check": [c for c in case.get("check", []) if c["detail"] != check["detail"]] + [check]}
 
     def facts(self, transcript) -> str:
-        said = _digits(" ".join(text for role, text in transcript if role == "customer"))
-        numbers = dict.fromkeys(run for run in said.split() if len(run) >= 3)
-        counts = [f"- {n}: {len(n)} digits" for n in numbers] or ["- none yet"]
         checks = [f"- {detail!r}: " + ("the customer has answered it since Aria saw it; asking again repeats "
                                         "a question they already answered" if detail in self.answered
                                         else "not answered yet") for detail in self.shown] or ["- none yet"]
-        return ("\n\nDIGIT COUNTS (exact) of numbers the customer said; for reference, a phone number has 10 "
-                "digits and a ZIP code has 5:\n" + "\n".join(counts)
-                + "\n\nCHECKS ALREADY SHOWN TO ARIA:\n" + "\n".join(checks))
+        return "\n\nCHECKS ALREADY SHOWN TO ARIA:\n" + "\n".join(checks)
 
     async def think(self, transcript, searched=None) -> tuple[dict, str]:
         content = ("TRANSCRIPT:\n" + "\n".join(f"{role.upper()}: {text}" for role, text in transcript)
