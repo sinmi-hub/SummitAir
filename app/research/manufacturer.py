@@ -1,8 +1,12 @@
-"""Manufacturer troubleshooting guidance for the case file: its schema, the watcher
-prompt that governs it, and how it renders for Aria."""
+"""Manufacturer troubleshooting guidance for the case file: 
+ - Schema: Haiku response and parsing structure
+ - Prompt: System prompt for Aria governing it
+ - Render:."""
 
 GUIDANCE = {
-    "type": "object", "additionalProperties": False, "required": ["source", "steps"],
+    "type": "object", 
+    "additionalProperties": False, 
+    "required": ["source", "steps"],
     "properties": {
         "source": {"type": "string",
                    "description": "The manufacturer guide the steps come from, e.g. 'Carrier furnace manual'. "
