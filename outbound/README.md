@@ -48,8 +48,6 @@ flowchart LR
   actually gets wired in: a second `CallManager` built from the files above,
   and the caller-ID routing that sends the transferred-back-in call here
   instead of to SummitAir.
-- [`astra-handoff.md`](astra-handoff.md) — not code; a copy-paste prompt for
-  finding two things in the Telnyx/OpenAI dashboards. Local only.
 - [`PROGRESS.md`](PROGRESS.md) — the working log of what's been built,
   verified, and decided, and what's still open. Local only, most complete
   record if you lose track of where this stands.
@@ -101,5 +99,5 @@ python -m outbound.trigger +1XXXXXXXXXX https://HOST/webhooks/telnyx-outbound
 ## Repository hygiene
 
 Inherits SummitAir's `.env`/pre-commit setup — see the root
-[`README.md`](../README.md). `PROGRESS.md` and `astra-handoff.md` here are
-local working notes, gitignored, same pattern as the root project's.
+[`README.md`](../README.md). `PROGRESS.md` here is a
+local working note, gitignored, same pattern as the root project's.
