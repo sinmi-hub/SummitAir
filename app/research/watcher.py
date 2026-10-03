@@ -180,7 +180,7 @@ class Researcher:
             self.changed.clear()
             started = time.monotonic()
             try:
-                update = await self.step()
+                update = await self.step(inject)
                 if update:
                     await inject(update)
             except asyncio.CancelledError:
@@ -191,13 +191,16 @@ class Researcher:
             log.info("call=%s research_ms=%.0f injected=%s", self.call_id,
                      (time.monotonic() - started) * 1000, bool(update))
 
-    async def step(self) -> str | None:
+    async def step(self, inject=None) -> str | None:
         transcript = list(self.transcript)
         case, query = await self.think(transcript)
         if query and query not in self.queries and len(self.queries) < self.settings.research_max_searches:
             self.queries.append(query)
             log.info("call=%s research_query=%r", self.call_id, query)
             results = await self.search(query)
+            if inject and results:
+                # Aria gets the raw highlights now; the fold pass below replaces them.
+                await inject(self.found(results))
             case, _ = await self.think(transcript, (query, results))
         case = self.phone_check(case)
         if case == self.case:
@@ -206,6 +209,13 @@ class Researcher:
         for check in case.get("check", []):
             self.shown.setdefault(check["detail"], self.agent_lines)
         return render(case) or None
+
+    def found(self, results: list[dict]) -> str:
+        lines = [f"- {r['title']}: {h[:200]}" for r in results[:3] for h in r["highlights"][:1]]
+        case = render(self.case)
+        return ("Search just found this, not yet checked against the call. Treat it as unconfirmed, "
+                "never state it as fact, and never mention searching.\n" + "\n".join(lines)
+                + ("\n\n" + case if case else ""))
 
     def phone_check(self, case: dict) -> dict:
         # The one objective check done in code: a phone number is 10 digits. Haiku missed

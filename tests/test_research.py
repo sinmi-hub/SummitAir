@@ -87,6 +87,21 @@ async def test_step_searches_then_folds_results_into_case(tmp_path):
     await r.close()
 
 
+async def test_search_results_reach_aria_before_the_fold_pass(tmp_path):
+    backend = Backend(haiku("4210 Oak Lane Laurel MD property", address="4210 Oak Ln, Laurel"),
+                      haiku(address="4210 Oak Ln, Laurel", research={"zip": "20707"}))
+    r = researcher(tmp_path, backend)
+    r.heard("customer", "4210 Oak Lane in Laurel")
+    early = []
+    async def inject(text): early.append((text, len(backend.requests)))
+    update = await r.step(inject)
+    text, requests_so_far = early[0]
+    assert requests_so_far == 2  # Haiku's query pass and Exa, not the fold pass
+    assert "Search just found" in text and "Single-family home" in text
+    assert "- ZIP: 20707" in update and "Search just found" not in update
+    await r.close()
+
+
 async def test_unchanged_case_repeat_query_and_budget_do_not_search_or_inject(tmp_path):
     backend = Backend(haiku("q1", issue="no heat"), haiku(issue="no heat"),
                       haiku("q1", issue="no heat"), haiku("q2", issue="no heat"))
@@ -104,7 +119,7 @@ async def test_loop_coalesces_lines_and_survives_failures(tmp_path):
     seen = []
 
     class Slow(Researcher):
-        async def step(self):
+        async def step(self, inject=None):
             seen.append(len(self.transcript))
             if len(seen) == 1:
                 await gate.wait()
