@@ -1,6 +1,5 @@
-"""Background research for one call. Haiku reads the live transcript, Exa searches
-the web, and the result reaches the voice model only as context -- never as a tool
-call and never as a spoken response, so nothing here can pause the conversation."""
+"""Background research for one call. Haiku reads the live transcript, Exa searches the web, and the result reaches the voice model only as context 
+"""
 from __future__ import annotations
 
 import asyncio
@@ -194,6 +193,8 @@ class Researcher:
     async def step(self, inject=None) -> str | None:
         transcript = list(self.transcript)
         case, query = await self.think(transcript)
+
+
         if query and query not in self.queries and len(self.queries) < self.settings.research_max_searches:
             self.queries.append(query)
             log.info("call=%s research_query=%r", self.call_id, query)
@@ -203,9 +204,11 @@ class Researcher:
                 await inject(self.found(results))
             case, _ = await self.think(transcript, (query, results))
         case = self.phone_check(case)
+        
         if case == self.case:
             return None
         self.case = case
+
         for check in case.get("check", []):
             self.shown.setdefault(check["detail"], self.agent_lines)
         return render(case) or None
