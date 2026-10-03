@@ -60,7 +60,7 @@ def audio_input_config(interrupt_response: bool) -> dict:
     # rather than relying on a partial nested patch preserving siblings.
     return {
         "noise_reduction": {"type": "far_field"},
-        "turn_detection": {"type": "semantic_vad", "eagerness": "low",
+        "turn_detection": {"type": "semantic_vad", "eagerness": "high",
                            "interrupt_response": interrupt_response},
         # gpt-live-transcribe takes the plural `languages`, never `language`.
         # Pinned to English: unclear audio was coming back as single Chinese characters.

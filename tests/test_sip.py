@@ -170,7 +170,7 @@ async def test_acceptance_starts_with_interrupt_response_disabled(tmp_path):
     assert payload['audio']['input']['turn_detection']['interrupt_response'] is False
     transcription = payload['audio']['input']['transcription']
     assert transcription['languages'] == ['en'] and 'language' not in transcription
-    assert payload['audio']['input']['turn_detection']['eagerness'] == 'low'
+    assert payload['audio']['input']['turn_detection']['eagerness'] == 'high'
 
 async def test_greeting_protection_restores_only_after_matching_playback(call):
     call.greeting_protected = True
@@ -187,7 +187,7 @@ async def test_greeting_protection_restores_only_after_matching_playback(call):
     updates = [m for m in call.ws.messages if m['type'] == 'session.update']
     assert len(updates) == 1
     assert updates[0]['session']['audio']['input']['turn_detection'] == {
-        'type': 'semantic_vad', 'eagerness': 'low', 'interrupt_response': True}
+        'type': 'semantic_vad', 'eagerness': 'high', 'interrupt_response': True}
     await call.event({'type': 'output_audio_buffer.stopped', 'response_id': 'greeting'})
     assert len([m for m in call.ws.messages if m['type'] == 'session.update']) == 1
 
