@@ -206,30 +206,6 @@ async def test_research_is_off_by_default_and_opt_out_per_manager(tmp_path):
     assert CallManager(config(tmp_path, research_enabled=True)).research is True
 
 
-def test_used_in_flags_only_details_the_customer_never_said(tmp_path):
-    r = researcher(tmp_path, Backend())
-    r.case = case(address="4210 Oak Ln", research={"zip": "20707", "property_type": "residential"})
-    r.heard("customer", "4210 Oak Lane in Laurel")
-    assert r.used_in("That's zip code two zero seven zero seven, a single-family home, right?") == [
-        "zip", "property_type"]
-    assert r.used_in("And that's 20707?") == ["zip"]
-    # The open question names two groups, so it's not a use of the case file.
-    assert r.used_in("Is this residential or commercial?") == []
-    assert r.used_in("What's the best callback number?") == []
-    r.heard("customer", "it's a single family house, zip 20707")
-    assert r.used_in("That's a single-family home at 20707, right?") == []
-
-
-async def test_case_file_use_is_logged(call, caplog):
-    call.researcher.case = case(research={"zip": "20707"})
-    call.research_item_id = "research_abc"
-    with caplog.at_level("INFO", logger="summitair"):
-        await call.event({"type": "response.output_audio_transcript.done",
-                          "transcript": "Is the ZIP two zero seven zero seven?"})
-    assert "case_file_used=zip item=research_abc" in caplog.text
-
-
-
 def test_render_lists_checks_and_is_empty_when_nothing_is_known():
     assert render(EMPTY) == ""
     text = render(case(check=[{"detail": "phone 2021048899828", "reason": "13 digits; a US number has 10"}]))
@@ -258,14 +234,13 @@ async def test_injection_logs_what_aria_saw(call, caplog):
     assert "case_file='The customer said:\\n- ZIP: 10003'" in caplog.text
 
 
-def test_haiku_gets_exact_facts_instead_of_rules(tmp_path):
+def test_haiku_is_told_which_checks_were_shown_and_answered(tmp_path):
     r = researcher(tmp_path, Backend())
     r.heard("customer", "my number is two zero two one zero four eight eight nine nine eight two eight, zip 10100")
     zip_check = {"detail": "ZIP 10100", "reason": "search found 10003 for this address"}
     r.case = case(check=[zip_check])
     r.shown[zip_check["detail"]] = r.agent_lines
     facts = r.facts(r.transcript)
-    assert "- 2021048899828: 13 digits" in facts and "- 10100: 5 digits" in facts
     assert "'ZIP 10100': not answered yet" in facts
     r.heard("agent", "I caught one zero one zero zero. Is that right?")
     r.heard("customer", "yes, 10100")

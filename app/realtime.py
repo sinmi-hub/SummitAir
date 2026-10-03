@@ -474,10 +474,6 @@ class Call:
                 self.stop_research()
             log.info("call=%s agent_said=%r", self.call_id, self.last_agent_text)
             if self.researcher:
-                used = self.researcher.used_in(self.last_agent_text)
-                if used:
-                    log.info("call=%s case_file_used=%s item=%s", self.call_id,
-                             ",".join(used), self.research_item_id)
                 self.researcher.heard("agent", self.last_agent_text)
         elif kind == "response.function_call_arguments.done":
             invocation = event.get("call_id")
