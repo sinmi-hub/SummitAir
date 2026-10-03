@@ -37,7 +37,7 @@ class Settings:
     service_timezone: str = field(
         default_factory=lambda: _get("SERVICE_TIMEZONE", "America/New_York"))
 
-    # --- Background research (app/research.py) -- inbound only, off by default ---
+    # --- Background research (app/research/) -- inbound only, off by default ---
     research_enabled: bool = field(default_factory=lambda: _get_bool("RESEARCH_ENABLED", False))
     anthropic_api_key: str = field(default_factory=lambda: _get("ANTHROPIC_API_KEY"), repr=False)
     anthropic_workspace_id: str = field(
