@@ -23,3 +23,16 @@ These are text measurements, not audio durations or proof of what was heard.
 An entry can be an interrupted fragment, and consecutive entries can arrive
 out of spoken order. Question-mark counts do not detect multi-choice overload.
 Use the measurements to locate turns to review, not to impose a fixed word ratio.
+
+# Telnyx call recordings
+
+Downloads new outbound-call recordings from Telnyx into `recordings/` (git-ignored).
+Telnyx keeps its own copies; nothing is deleted. Needs `TELNYX_API` in `.env`.
+
+```bash
+.venv/bin/python scripts/telnyx_recordings.py --since 2d
+.venv/bin/python scripts/telnyx_recordings.py --since 6h --dry-run
+```
+
+Files are named `YYYYMMDD-HHMMSS_<recording id>.mp3` (UTC) and are dual channel, so
+the contact and Aria are on separate tracks. Re-running skips files already saved.

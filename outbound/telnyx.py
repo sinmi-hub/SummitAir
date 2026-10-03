@@ -61,6 +61,10 @@ async def transfer_to_openai(call_control_id, token, *, config=settings):
         "custom_headers": [{"name": state.HEADER, "value": token}],
         "command_id": str(uuid5(NAMESPACE_URL, token + ":transfer")),
         "timeout_secs": 30,
+        # Telnyx keeps the media, so it can record without audio passing through us.
+        "record": "record-from-answer",
+        "record_format": "mp3",
+        "record_channels": "dual",
     }
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(

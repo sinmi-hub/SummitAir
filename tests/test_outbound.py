@@ -251,6 +251,8 @@ async def test_telnyx_requests_carry_correlation_and_stable_commands(tmp_path, m
     assert transfer['custom_headers'] == [{'name':state.HEADER,'value':token}]
     assert transfer['from'] == cfg.outbound_from_number
     assert transfer['media_encryption'] == 'SRTP' and transfer['sip_transport_protocol'] == 'TLS'
+    assert (transfer['record'], transfer['record_format'], transfer['record_channels']) == (
+        'record-from-answer', 'mp3', 'dual')
     await telnyx.transfer_to_openai('original', token, config=cfg)
     assert json.loads(requests[-1].content)['command_id'] == transfer['command_id']
     assert transfer['command_id'] != dial['command_id']

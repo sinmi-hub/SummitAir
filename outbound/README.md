@@ -7,7 +7,7 @@ machinery directly instead of duplicating it.
 
 ## What it can do
 
-The agent discloses itself as an AI immediately, on Sinmi's behalf, and gives
+The agent discloses itself as an AI immediately, on user's behalf, and gives
 the person an easy way to decline. From there it's a warm, open conversation,
 not an intake script: what's new with them, and a few topics that come up naturally. The full conversation
 logic lives in [`SYSTEM-PROMPT.md`](SYSTEM-PROMPT.md).
@@ -54,16 +54,9 @@ flowchart LR
 
 ## Why this shape
 
-- Telnyx Call Control is used for exactly one thing: originating the call.
-  Once the call is answered, the leg is transferred straight to OpenAI's SIP endpoint —
-  the same SIP-passthrough pattern SummitAir's inbound flow already uses, not
-  the older Telnyx-media-streaming-plus-manual-bridge pattern from
-  `~/voice-agent`, which this project deliberately moved away from.
+- Telnyx Call Control is used for exactly one thing: originating the call. This is a huge shift from first versions of Aria that built out infra
 
-- `app/realtime.py`'s `Call`/`CallManager` are reused directly via optional
-  constructor parameters (`instructions`, `tools`, `handlers`, `greeting`,
-  `closing_goodbye`), not duplicated. SummitAir's own call sites pass none of
-  these and are unaffected; this project passes its own.
+- `app/realtime.py`'s `Call`/`CallManager` are reused directly from top level project
 
 - One webhook endpoint (`/webhooks/openai`) legitimately serves both SummitAir
   and this call, since OpenAI's incoming-call webhook is registered once per
@@ -71,12 +64,6 @@ flowchart LR
   `data.sip_headers`, matching it against `OUTBOUND_FROM_NUMBER` — the one
   field in that payload that actually differs between the two.
 
-- No topic-specific tool exists. The report back to Sinmi is the same
-  `agent_said`/`caller_said` journal logging SummitAir already produces, read
-  after the call, not a dedicated tool or database.
-
-Progress notes and open questions: [`PROGRESS.md`](PROGRESS.md) (local only,
-not committed).
 
 ## Running it
 
@@ -95,9 +82,3 @@ real URL Telnyx and OpenAI can reach):
 ```sh
 python -m outbound.trigger +1XXXXXXXXXX https://HOST/webhooks/telnyx-outbound
 ```
-
-## Repository hygiene
-
-Inherits SummitAir's `.env`/pre-commit setup — see the root
-[`README.md`](../README.md). `PROGRESS.md` here is a
-local working note, gitignored, same pattern as the root project's.
