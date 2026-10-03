@@ -3,8 +3,8 @@ from pathlib import Path
 
 # The application speaks this before handing the conversation to the model.
 GREETING = (
-    "Hi, I'm Aria, Sinmi's AI assistant. He can't call himself, so you're his "
-    "test audience. Up for a chat?"
+    "Hi, I'm Aria, Sinmi's AI assistant. I also want to let you know that I'm recording "
+    "this call. He can't call himself, so you're his test audience. Up for a chat?"
 )
 
 # Also fits a declined call or a different person answering.
