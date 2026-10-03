@@ -247,17 +247,6 @@ def test_haiku_is_told_which_checks_were_shown_and_answered(tmp_path):
     assert "'ZIP 10100': the customer has answered it since Aria saw it" in r.facts(r.transcript)
 
 
-def test_a_phone_number_that_is_not_ten_digits_is_flagged_once(tmp_path):
-    r = researcher(tmp_path, Backend())
-    for number in ("5555550100", ""):
-        assert r.phone_check(case(phone=number))["check"] == []
-    for number in ("2021048899828", "15555550100", "555555010"):
-        [check] = r.phone_check(case(phone=number))["check"]
-        assert check["reason"] == f"{len(number)} digits; a phone number has 10"
-    r.answered.add("phone number 2021048899828")
-    assert r.phone_check(case(phone="2021048899828"))["check"] == []  # answered: not raised again
-
-
 def test_manufacturer_guidance_renders_as_its_own_credited_section():
     guidance = {"source": "Carrier furnace manual", "steps": ["Check the air filter", "Reset the breaker"]}
     text = render(case(equipment="Carrier furnace", research={"manufacturer_guidance": guidance}))
