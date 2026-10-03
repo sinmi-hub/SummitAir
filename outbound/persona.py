@@ -13,4 +13,8 @@ CLOSING_PHRASES = ("thanks for chatting", "take care", "goodbye", "bye", "safe t
 
 
 def system_prompt() -> str:
-    return Path(__file__).with_name("SYSTEM-PROMPT.md").read_text(encoding="utf-8")
+    # The real prompt is git-ignored; the committed example is the fallback.
+    path = Path(__file__).with_name("SYSTEM-PROMPT.md")
+    if not path.exists():
+        path = path.with_name("SYSTEM-PROMPT.example.md")
+    return path.read_text(encoding="utf-8")
