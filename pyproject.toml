@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "summit-air-sip"
+name = "aria"
 version = "0.2.0"
 requires-python = ">=3.11"
 dependencies = [
