@@ -1,6 +1,5 @@
-"""Background research for one call. Haiku reads the live transcript, Exa searches
-the web, and the result reaches the voice model only as context -- never as a tool
-call and never as a spoken response, so nothing here can pause the conversation."""
+"""Background research for one call. Haiku reads the live transcript, Exa searches the web, and the result reaches the voice model only as context 
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,9 +7,12 @@ import json
 import logging
 import re
 import time
+from pathlib import Path
 
 import httpx
 from jsonschema import Draft202012Validator
+
+from app.research import manufacturer
 
 log = logging.getLogger("summitair")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
@@ -41,6 +43,8 @@ RESEARCH_SUGGESTS = _slots({
 RESEARCH_SUGGESTS["properties"]["notes"] = {"type": "array", "items": {"type": "string"},
                                             "description": "Other short facts about this property or equipment."}
 RESEARCH_SUGGESTS["required"].append("notes")
+RESEARCH_SUGGESTS["properties"]["manufacturer_guidance"] = manufacturer.GUIDANCE
+RESEARCH_SUGGESTS["required"].append("manufacturer_guidance")
 CASE = {"type": "object", "additionalProperties": False, "required": ["customer_said", "research_suggests", "check"],
         "properties": {
             "customer_said": CUSTOMER_SAID,
@@ -59,22 +63,7 @@ UPDATE_TOOL = {
 }
 VALIDATE = Draft202012Validator(UPDATE_TOOL["input_schema"])
 
-WATCHER_PROMPT = """You watch a live phone call to Summit Air, an HVAC company in the United States, and keep a case file for the voice agent, Aria. You never talk to the customer.
-
-The case file lets Aria confirm details instead of asking for them. That shortens the call and shows the customer that Summit Air is listening. A wrong case file does the opposite: Aria confirms something false, the customer has to correct her, and their trust in Summit Air drops. Accuracy matters more than completeness; an empty slot only means Aria asks.
-
-CUSTOMER lines come from speech recognition on a phone line. Unclear audio can come out as a single Chinese character (such as 嗯 or 说) or a stray fragment in another language; that is noise, not something the customer said. AGENT lines are exactly what Aria said.
-
-The case file has three parts, each with its own job:
-- customer_said holds what the customer told us, rebuilt from obvious mishearings. Aria reads these back, so a detail the customer never gave would sound like Summit Air wasn't listening.
-- research_suggests holds what a web search found about this customer's own property or equipment. Aria uses it to confirm instead of ask, and to help when the customer isn't sure. A result about a different address or model is someone else's building, not a near match.
-- check holds a detail the customer gave that looks wrong, with a short reason Aria can act on. Every check makes the customer repeat themselves, so raise one only when it would change the booking, and let it go once the customer has answered it.
-
-Search when a new, specific fact appears that the web can add to: a property you can identify, or equipment with a symptom. Each search adds delay and uses one of only a few per call, and a query that could match many places returns someone else's property. Never search names or phone numbers. During an emergency (gas, fire, smoke, carbon monoxide), don't search: Aria's only job then is the customer's safety.
-
-Each request also carries facts the system tracks exactly: the digit count of every number the customer said, and the checks Aria has already been shown, with whether the customer has answered since. Rely on them rather than recounting or guessing.
-
-Always answer by calling update_case. The system reads only that tool call, so anything else is lost."""
+WATCHER_PROMPT = Path(__file__).with_name("WATCHER-PROMPT.md").read_text(encoding="utf-8").rstrip()
 
 
 def render(case: dict) -> str:
@@ -92,6 +81,7 @@ def render(case: dict) -> str:
          [f"- {label}: {research[key][:200]}" for key, label in research_labels
           if research.get(key) and research[key] != "unknown"]
          + [f"- {note[:200]}" for note in research.get("notes", [])]),
+        manufacturer.section(research),
         ("Check with the customer (ask about these specifically):",
          [f"- {c['detail'][:120]}: {c['reason'][:200]}" for c in case.get("check", [])]),
     ]
@@ -103,26 +93,6 @@ def render(case: dict) -> str:
             "details from it instead of asking for them, which keeps the call short. Never state it "
             "as fact, diagnose from it, or mention searching. The customer's own words always win.\n"
             + "\n".join(lines))
-
-
-DIGIT_WORDS = {"zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
-               "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"}
-# One property type per group. A line naming two groups is the open question
-# ("residential or commercial?"), not a use of the case file.
-PROPERTY_WORDS = {"residential": ("single-family", "single family", "residential", "townhouse"),
-                  "apartment": ("apartment", "condo"),
-                  "commercial": ("commercial", "business", "office")}
-
-
-def _digits(text: str) -> str:
-    # "two zero seven zero seven" and "20707" both become "20707"; other words split runs.
-    tokens = re.findall(r"[a-z]+|\d", text.lower())
-    return "".join(DIGIT_WORDS.get(t, t) if t.isdigit() or t in DIGIT_WORDS else " " for t in tokens)
-
-
-def _property_groups(text: str) -> set[str]:
-    text = text.lower()
-    return {kind for kind, words in PROPERTY_WORDS.items() if any(w in text for w in words)}
 
 
 class Researcher:
@@ -150,21 +120,6 @@ class Researcher:
                 self.answered |= {d for d, shown_at in self.shown.items() if self.agent_lines > shown_at}
                 self.changed.set()
 
-    def used_in(self, agent_text: str) -> list[str]:
-        """Trace only: case-file details the agent just spoke that the customer never
-        said -- the only place the agent could have learned them. Never feeds logic."""
-        customer = " ".join(text for role, text in self.transcript if role == "customer")
-        used = []
-        research = self.case.get("research_suggests", {})
-        zip_code = re.sub(r"\D", "", research.get("zip", ""))
-        if len(zip_code) == 5 and zip_code in _digits(agent_text) and zip_code not in _digits(customer):
-            used.append("zip")
-        kind = research.get("property_type")
-        if (kind in PROPERTY_WORDS and _property_groups(agent_text) == {kind}
-                and kind not in _property_groups(customer)):
-            used.append("property_type")
-        return used
-
     async def run(self, inject):
         # One pass at a time. Lines that arrive during a pass only set the event,
         # so the next pass reads the whole, longer transcript -- nothing is dropped.
@@ -173,7 +128,7 @@ class Researcher:
             self.changed.clear()
             started = time.monotonic()
             try:
-                update = await self.step()
+                update = await self.step(inject)
                 if update:
                     await inject(update)
             except asyncio.CancelledError:
@@ -184,25 +139,39 @@ class Researcher:
             log.info("call=%s research_ms=%.0f injected=%s", self.call_id,
                      (time.monotonic() - started) * 1000, bool(update))
 
-    async def step(self) -> str | None:
+    async def step(self, inject=None) -> str | None:
         transcript = list(self.transcript)
         case, query = await self.think(transcript)
+
+
         if query and query not in self.queries and len(self.queries) < self.settings.research_max_searches:
             self.queries.append(query)
             log.info("call=%s research_query=%r", self.call_id, query)
             results = await self.search(query)
+            if inject and results:
+                # Aria gets the raw highlights now; the fold pass below replaces them.
+                await inject(self.found(results))
             case, _ = await self.think(transcript, (query, results))
         case = self.phone_check(case)
+        
         if case == self.case:
             return None
         self.case = case
+
         for check in case.get("check", []):
             self.shown.setdefault(check["detail"], self.agent_lines)
         return render(case) or None
 
+    def found(self, results: list[dict]) -> str:
+        lines = [f"- {r['title']}: {h[:200]}" for r in results[:3] for h in r["highlights"][:1]]
+        case = render(self.case)
+        return ("Search just found this, not yet checked against the call. Treat it as unconfirmed, "
+                "never state it as fact, and never mention searching.\n" + "\n".join(lines)
+                + ("\n\n" + case if case else ""))
+
     def phone_check(self, case: dict) -> dict:
         # The one objective check done in code: a phone number is 10 digits. Haiku missed
-        # a 13-digit number even with the exact count in its facts. Asked once, like any check.
+        # a 13-digit number even when it was given the exact digit count. Asked once, like any check.
         digits = re.sub(r"\D", "", case.get("customer_said", {}).get("phone", ""))
         check = {"detail": f"phone number {digits}", "reason": f"{len(digits)} digits; a phone number has 10"}
         if not digits or len(digits) == 10 or check["detail"] in self.answered:
@@ -210,15 +179,10 @@ class Researcher:
         return {**case, "check": [c for c in case.get("check", []) if c["detail"] != check["detail"]] + [check]}
 
     def facts(self, transcript) -> str:
-        said = _digits(" ".join(text for role, text in transcript if role == "customer"))
-        numbers = dict.fromkeys(run for run in said.split() if len(run) >= 3)
-        counts = [f"- {n}: {len(n)} digits" for n in numbers] or ["- none yet"]
         checks = [f"- {detail!r}: " + ("the customer has answered it since Aria saw it; asking again repeats "
                                         "a question they already answered" if detail in self.answered
                                         else "not answered yet") for detail in self.shown] or ["- none yet"]
-        return ("\n\nDIGIT COUNTS (exact) of numbers the customer said; for reference, a phone number has 10 "
-                "digits and a ZIP code has 5:\n" + "\n".join(counts)
-                + "\n\nCHECKS ALREADY SHOWN TO ARIA:\n" + "\n".join(checks))
+        return "\n\nCHECKS ALREADY SHOWN TO ARIA:\n" + "\n".join(checks)
 
     async def think(self, transcript, searched=None) -> tuple[dict, str]:
         content = ("TRANSCRIPT:\n" + "\n".join(f"{role.upper()}: {text}" for role, text in transcript)

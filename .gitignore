@@ -34,13 +34,11 @@ dist/
 
 # Private deployment history
 /deploy/STATUS.md
-/temp.md
 /BACKLOG.md
 /AGENTS.md
 /PROGRESS.md
 /outbound/PROGRESS.md
 /outbound/SYSTEM-PROMPT.md
-/outbound/astra-handoff.md
 
 # Local tools, editor settings, recordings, and scratch exports
 .agents/

@@ -11,7 +11,8 @@ from app.research import Researcher, render
 from tests.test_sip import Socket, config
 
 SAID = {"issue": "", "equipment": "", "address": "", "zip": "", "phone": "", "property_type": "", "unit_number": ""}
-RESEARCH = {"property_type": "unknown", "unit_number_needed": "unknown", "zip": "", "notes": []}
+RESEARCH = {"property_type": "unknown", "unit_number_needed": "unknown", "zip": "", "notes": [],
+            "manufacturer_guidance": {"source": "", "steps": []}}
 
 
 def case(check=(), notes=(), research=None, **said):
@@ -86,6 +87,21 @@ async def test_step_searches_then_folds_results_into_case(tmp_path):
     await r.close()
 
 
+async def test_search_results_reach_aria_before_the_fold_pass(tmp_path):
+    backend = Backend(haiku("4210 Oak Lane Laurel MD property", address="4210 Oak Ln, Laurel"),
+                      haiku(address="4210 Oak Ln, Laurel", research={"zip": "20707"}))
+    r = researcher(tmp_path, backend)
+    r.heard("customer", "4210 Oak Lane in Laurel")
+    early = []
+    async def inject(text): early.append((text, len(backend.requests)))
+    update = await r.step(inject)
+    text, requests_so_far = early[0]
+    assert requests_so_far == 2  # Haiku's query pass and Exa, not the fold pass
+    assert "Search just found" in text and "Single-family home" in text
+    assert "- ZIP: 20707" in update and "Search just found" not in update
+    await r.close()
+
+
 async def test_unchanged_case_repeat_query_and_budget_do_not_search_or_inject(tmp_path):
     backend = Backend(haiku("q1", issue="no heat"), haiku(issue="no heat"),
                       haiku("q1", issue="no heat"), haiku("q2", issue="no heat"))
@@ -103,7 +119,7 @@ async def test_loop_coalesces_lines_and_survives_failures(tmp_path):
     seen = []
 
     class Slow(Researcher):
-        async def step(self):
+        async def step(self, inject=None):
             seen.append(len(self.transcript))
             if len(seen) == 1:
                 await gate.wait()
@@ -190,30 +206,6 @@ async def test_research_is_off_by_default_and_opt_out_per_manager(tmp_path):
     assert CallManager(config(tmp_path, research_enabled=True)).research is True
 
 
-def test_used_in_flags_only_details_the_customer_never_said(tmp_path):
-    r = researcher(tmp_path, Backend())
-    r.case = case(address="4210 Oak Ln", research={"zip": "20707", "property_type": "residential"})
-    r.heard("customer", "4210 Oak Lane in Laurel")
-    assert r.used_in("That's zip code two zero seven zero seven, a single-family home, right?") == [
-        "zip", "property_type"]
-    assert r.used_in("And that's 20707?") == ["zip"]
-    # The open question names two groups, so it's not a use of the case file.
-    assert r.used_in("Is this residential or commercial?") == []
-    assert r.used_in("What's the best callback number?") == []
-    r.heard("customer", "it's a single family house, zip 20707")
-    assert r.used_in("That's a single-family home at 20707, right?") == []
-
-
-async def test_case_file_use_is_logged(call, caplog):
-    call.researcher.case = case(research={"zip": "20707"})
-    call.research_item_id = "research_abc"
-    with caplog.at_level("INFO", logger="summitair"):
-        await call.event({"type": "response.output_audio_transcript.done",
-                          "transcript": "Is the ZIP two zero seven zero seven?"})
-    assert "case_file_used=zip item=research_abc" in caplog.text
-
-
-
 def test_render_lists_checks_and_is_empty_when_nothing_is_known():
     assert render(EMPTY) == ""
     text = render(case(check=[{"detail": "phone 2021048899828", "reason": "13 digits; a US number has 10"}]))
@@ -242,14 +234,13 @@ async def test_injection_logs_what_aria_saw(call, caplog):
     assert "case_file='The customer said:\\n- ZIP: 10003'" in caplog.text
 
 
-def test_haiku_gets_exact_facts_instead_of_rules(tmp_path):
+def test_haiku_is_told_which_checks_were_shown_and_answered(tmp_path):
     r = researcher(tmp_path, Backend())
     r.heard("customer", "my number is two zero two one zero four eight eight nine nine eight two eight, zip 10100")
     zip_check = {"detail": "ZIP 10100", "reason": "search found 10003 for this address"}
     r.case = case(check=[zip_check])
     r.shown[zip_check["detail"]] = r.agent_lines
     facts = r.facts(r.transcript)
-    assert "- 2021048899828: 13 digits" in facts and "- 10100: 5 digits" in facts
     assert "'ZIP 10100': not answered yet" in facts
     r.heard("agent", "I caught one zero one zero zero. Is that right?")
     r.heard("customer", "yes, 10100")
@@ -265,3 +256,11 @@ def test_a_phone_number_that_is_not_ten_digits_is_flagged_once(tmp_path):
         assert check["reason"] == f"{len(number)} digits; a phone number has 10"
     r.answered.add("phone number 2021048899828")
     assert r.phone_check(case(phone="2021048899828"))["check"] == []  # answered: not raised again
+
+
+def test_manufacturer_guidance_renders_as_its_own_credited_section():
+    guidance = {"source": "Carrier furnace manual", "steps": ["Check the air filter", "Reset the breaker"]}
+    text = render(case(equipment="Carrier furnace", research={"manufacturer_guidance": guidance}))
+    assert "Manufacturer guidance (from Carrier furnace manual; credit the manufacturer" in text
+    assert "- Check the air filter" in text and "- Reset the breaker" in text
+    assert "Manufacturer guidance" not in render(case(equipment="Carrier furnace"))
