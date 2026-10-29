@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Check entire staged files without printing credential values."""
+import pathlib
+import re
+import subprocess
+import sys
+
+patterns = re.compile(
+    rb'sk-(?:proj-|ant-)?[A-Za-z0-9_-]{32,}'
+    rb'|whsec_[A-Za-z0-9+/=_-]{24,}'
+    rb'|KEY[0-9A-Fa-f]{30,}'
+    rb'|(?:ghp_|github_pat_|hf_)[A-Za-z0-9_]{30,}'
+    rb'|(?:sk_live_|rk_live_)[A-Za-z0-9]{20,}'
+    rb'|AKIA[0-9A-Z]{16}'
+    rb'|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+    rb'|"private_key"\s*:\s*"'
+    rb'|GOOGLE_SA_KEY_B64\s*=\s*[\'\"]?[A-Za-z0-9+/=]{80,}'
+)
+paths = subprocess.check_output([
+    'git', 'diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z'
+]).split(b'\0')
+blocked = False
+for raw in filter(None, paths):
+    name = raw.decode('utf-8', errors='surrogateescape')
+    path = pathlib.PurePosixPath(name)
+    private_name = (
+        path.name != '.env.example' and
+        (path.name == '.env' or path.name.startswith('.env.') or
+         path.suffix in {'.env', '.pem', '.key', '.p12', '.pfx'} or
+         any(part in {'.keys', 'secrets', 'credentials', 'recordings', 'transcripts', 'exports'}
+             for part in path.parts))
+    )
+    content = subprocess.check_output(['git', 'show', ':' + name])
+    if private_name or patterns.search(content):
+        print(f'Commit blocked: review private file or credential in {name!r}.')
+        blocked = True
+if blocked:
+    print('Remove private material from the staged files. No credential values were printed.')
+    sys.exit(1)
